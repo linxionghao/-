@@ -1,0 +1,177 @@
+[
+  {
+    "seq_no": 0,
+    "source_file": "8D案例-切刀磨损螺纹外径偏小.md",
+    "heading": "D2 问题描述",
+    "content": "## D2 问题描述\n2025 年 4 月 17 日 14:20，检品工序巡检发现批次 LOT-20250417-06 的 M20×1.5 螺栓连续 5 件外径测得值低于下限（19.950mm 附近），缺陷代码 DEF-THD-01。当班为白班转夜班交接时段，同线其他规格产品未见异常。不良率为抽检 10 件中 5 件不合格，远超历史基线。",
+    "char_len": 170,
+    "doc_meta": {
+      "doc_id": "CASE-2025-0417",
+      "doc_type": "8d_case",
+      "title": "切刀磨损导致螺纹外径偏小的 8D 案例",
+      "defect_code": "DEF-THD-01",
+      "equipment_id": "CUT-03",
+      "op_code": "切粒",
+      "root_cause_confirmed": true,
+      "closure_effective": "2025-05-10"
+    }
+  },
+  {
+    "seq_no": 1,
+    "source_file": "8D案例-切刀磨损螺纹外径偏小.md",
+    "heading": "D3 临时围堵",
+    "content": "## D3 临时围堵\n立即停线并隔离 LOT-20250417-06 全批 4200 件；通过工单工序记录正向排查，确认同班次同切刀加工的相邻两个批次 LOT-20250417-04、05 纳入复检范围。三批中再检出不合格 37 件，全部挂红标签入隔离区。围堵判定：该切刀 13:00 以后加工的产品全部可疑。",
+    "char_len": 155,
+    "doc_meta": {
+      "doc_id": "CASE-2025-0417",
+      "doc_type": "8d_case",
+      "title": "切刀磨损导致螺纹外径偏小的 8D 案例",
+      "defect_code": "DEF-THD-01",
+      "equipment_id": "CUT-03",
+      "op_code": "切粒",
+      "root_cause_confirmed": true,
+      "closure_effective": "2025-05-10"
+    }
+  },
+  {
+    "seq_no": 2,
+    "source_file": "8D案例-切刀磨损螺纹外径偏小.md",
+    "heading": "D4 根因分析（工程师已确认）",
+    "content": "## D4 根因分析（工程师已确认）\n调取 3 号切刀（CUT-03）的工序参数留痕发现：当日 14:00 起进给量参数从 0.15mm 降至 0.11mm 且跳动增大，与刀具后刀面磨损特征一致。SPC 控制图显示 13:00 后外径均值出现 7 点连降趋势（Nelson 规则 5 命中），而巡检未能及时发现。拆检确认切刀后刀面磨损量超限。根因：切刀达到寿命上限后未按时更换，且磨损预警规则当时未覆盖该工序参数。",
+    "char_len": 207,
+    "doc_meta": {
+      "doc_id": "CASE-2025-0417",
+      "doc_type": "8d_case",
+      "title": "切刀磨损导致螺纹外径偏小的 8D 案例",
+      "defect_code": "DEF-THD-01",
+      "equipment_id": "CUT-03",
+      "op_code": "切粒",
+      "root_cause_confirmed": true,
+      "closure_effective": "2025-05-10"
+    }
+  },
+  {
+    "seq_no": 3,
+    "source_file": "8D案例-切刀磨损螺纹外径偏小.md",
+    "heading": "D5 纠正措施",
+    "content": "## D5 纠正措施\n更换新切刀并重新校验首件；对隔离三批进行 100% 复检，合格批放行，不合格批报废处理。同时把该工序进给量纳入 SPC 实时监控规则，设定 Nelson 规则 5 与参数越界双重告警，告警阈值随刀具寿命数据每季度修订。",
+    "char_len": 120,
+    "doc_meta": {
+      "doc_id": "CASE-2025-0417",
+      "doc_type": "8d_case",
+      "title": "切刀磨损导致螺纹外径偏小的 8D 案例",
+      "defect_code": "DEF-THD-01",
+      "equipment_id": "CUT-03",
+      "op_code": "切粒",
+      "root_cause_confirmed": true,
+      "closure_effective": "2025-05-10"
+    }
+  },
+  {
+    "seq_no": 4,
+    "source_file": "8D案例-切刀磨损螺纹外径偏小.md",
+    "heading": "D6 预防措施与经验教训",
+    "content": "## D6 预防措施与经验教训\n将切刀寿命从 8000 件下调至 6500 件并强制换刀点检；在 MES 刀具管理模块中绑定\"刀次计数到限自动锁定工单\"逻辑。经验教训：刀具类根因的典型信号是\"同设备、同时段、参数缓慢单向漂移\"，与原料批次问题的\"整批集中\"模式不同，归因时应优先对比参数时间曲线。",
+    "char_len": 148,
+    "doc_meta": {
+      "doc_id": "CASE-2025-0417",
+      "doc_type": "8d_case",
+      "title": "切刀磨损导致螺纹外径偏小的 8D 案例",
+      "defect_code": "DEF-THD-01",
+      "equipment_id": "CUT-03",
+      "op_code": "切粒",
+      "root_cause_confirmed": true,
+      "closure_effective": "2025-05-10"
+    }
+  },
+  {
+    "seq_no": 0,
+    "source_file": "检验标准-螺纹外径检验规范v2.md",
+    "heading": "1. 适用范围",
+    "content": "## 1. 适用范围\n本规范适用于本公司精密加工车间生产的全部外螺纹零件，包括但不限于定位螺钉、紧固螺栓与调距螺杆。规范覆盖从首件检验、过程巡检到成品终检的全部检验环节。凡本规范未尽事宜，按《进货检验通用管理制度》执行。本规范自 2026 年 3 月 1 日起生效，替代 v1 版本；v1 版自生效日起废止，仅供历史批次追溯查询使用，不得作为现行判定依据。",
+    "char_len": 178,
+    "doc_meta": {
+      "doc_id": "STD-THD-001",
+      "doc_type": "standard",
+      "title": "螺纹外径检验规范",
+      "spec_id": "STD-THD",
+      "version": "v2",
+      "effective_from": "2026-03-01",
+      "effective_to": null,
+      "status": "active",
+      "op_code": "检品"
+    }
+  },
+  {
+    "seq_no": 1,
+    "source_file": "检验标准-螺纹外径检验规范v2.md",
+    "heading": "2. 检验项目与公差",
+    "content": "## 2. 检验项目与公差\n外螺纹中径与外径为必检项目。以 M20×1.5-6g 规格为例：外径公称值 19.98mm，公差带 19.966mm 至 19.984mm；中径公差带 19.216mm 至 19.350mm。检验使用三坐标测量机或螺纹千分尺，量具须在计量校准有效期内，校准记录编号须填写在检验单背面。测得值超出公差带即判为不合格，不做让步接收。",
+    "char_len": 178,
+    "doc_meta": {
+      "doc_id": "STD-THD-001",
+      "doc_type": "standard",
+      "title": "螺纹外径检验规范",
+      "spec_id": "STD-THD",
+      "version": "v2",
+      "effective_from": "2026-03-01",
+      "effective_to": null,
+      "status": "active",
+      "op_code": "检品"
+    }
+  },
+  {
+    "seq_no": 2,
+    "source_file": "检验标准-螺纹外径检验规范v2.md",
+    "heading": "3. 抽样方案",
+    "content": "## 3. 抽样方案\n首件检验：每班次开工后前 3 件全检。过程巡检：每 2 小抽 5 件，采用 GB/T 2828.1 一般检验水平 II，AQL=1.0。终检：按批次的 5% 抽检且不少于 8 件。巡检发现 1 件不合格时加严一倍抽样；连续两轮巡检出现不合格则停线隔离，开不合格品单并通知班组长与质量工程师。",
+    "char_len": 156,
+    "doc_meta": {
+      "doc_id": "STD-THD-001",
+      "doc_type": "standard",
+      "title": "螺纹外径检验规范",
+      "spec_id": "STD-THD",
+      "version": "v2",
+      "effective_from": "2026-03-01",
+      "effective_to": null,
+      "status": "active",
+      "op_code": "检品"
+    }
+  },
+  {
+    "seq_no": 3,
+    "source_file": "检验标准-螺纹外径检验规范v2.md",
+    "heading": "4. 判定与记录规则",
+    "content": "## 4. 判定与记录规则\n判定以缺陷发生的业务时刻（occurred_at）当时生效的标准版本为准，不以检验单录入时间或事后补录为准。检验单必须同时填写业务时间与录入时间。不合格品须挂红色标签并移入隔离区，缺陷代码按《缺陷代码表》选取，常见螺纹类缺陷代码：DEF-THD-01 外径偏小、DEF-THD-02 中径超差、DEF-THD-03 牙型缺损。",
+    "char_len": 177,
+    "doc_meta": {
+      "doc_id": "STD-THD-001",
+      "doc_type": "standard",
+      "title": "螺纹外径检验规范",
+      "spec_id": "STD-THD",
+      "version": "v2",
+      "effective_from": "2026-03-01",
+      "effective_to": null,
+      "status": "active",
+      "op_code": "检品"
+    }
+  },
+  {
+    "seq_no": 4,
+    "source_file": "检验标准-螺纹外径检验规范v2.md",
+    "heading": "5. 版本说明",
+    "content": "## 5. 版本说明\nv1（2025-06-01 至 2026-02-28）公差带较宽，外径下限为 19.952mm。历史上曾出现 v1 判定合格、按 v2 应判不合格的批次争议，处理原则：按缺陷发生时刻的版本判定，不做追溯性改判。",
+    "char_len": 116,
+    "doc_meta": {
+      "doc_id": "STD-THD-001",
+      "doc_type": "standard",
+      "title": "螺纹外径检验规范",
+      "spec_id": "STD-THD",
+      "version": "v2",
+      "effective_from": "2026-03-01",
+      "effective_to": null,
+      "status": "active",
+      "op_code": "检品"
+    }
+  }
+]

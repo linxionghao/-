@@ -1,0 +1,31 @@
+# ============================================================
+# 阶段1 RAG 原型配置（对应 docs/architecture.md 第 5 节）
+# 优先级：本文件 < 环境变量 QT_<SECTION>__<KEY>
+#   例：QT_LLM__MODEL=xxx  QT_EMBEDDING__ENABLED=true
+# ============================================================
+
+llm:
+  # ---- 对话模型供应商（OpenAI 兼容协议，换供应商只改这里）----
+  provider: openai_compatible        # 预留字段：后续阶段可扩展 ollama / azure 等
+  base_url: https://api.example.com/v1   # ★改成你的供应商地址
+  api_key_env: QT_LLM_API_KEY       # API Key 从环境变量读，不落盘
+  model: demo-model                 # ★改成实际模型名
+  timeout_s: 30
+
+embedding:
+  # ---- 向量服务（OpenAI 兼容 /embeddings 接口）----
+  # enabled=false → 自动降级为 BM25 纯关键词检索（架构 4.5 节降级方案）
+  enabled: false                    # ★接了向量服务后改 true
+  provider: openai_compatible
+  base_url: https://api.example.com/v1
+  api_key_env: QT_EMBEDDING_API_KEY
+  model: text-embedding-demo
+  timeout_s: 30
+
+retrieval:
+  # ---- 检索参数 ----
+  chunk_size: 500                   # 切片目标长度（字符）
+  chunk_overlap: 80                 # 切片重叠，防止语义被切断
+  top_k: 3                          # 最终进入提示词的条数
+  recall: 10                        # 每个通道各自召回的候选数（融合前）
+  rrf_k: 60                         # RRF 融合常数

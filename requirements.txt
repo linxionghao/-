@@ -1,1 +1,9 @@
 PyYAML>=6.0
+
+# ---- 阶段1 RAG 原型新增（examples/phase1_rag_demo.py）----
+numpy>=1.24          # 向量计算
+requests>=2.31       # LLM / embedding API 调用（OpenAI 兼容协议）
+
+# 可选依赖（缺失时脚本自动降级，不影响运行）：
+#   pip install faiss-cpu   # 向量索引；未装则退化为 numpy 暴力余弦（切片<10万时无差别）
+#   pip install jieba       # 中文分词；未装则退化为汉字二元组分词
