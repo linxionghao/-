@@ -4,6 +4,13 @@
 #   例：QT_LLM__MODEL=xxx  QT_EMBEDDING__ENABLED=true
 # ============================================================
 
+auth:
+  # ---- 鉴权（阶段 3，docs/stage3-design.md 第 1 节）----
+  secret: quality-trace-demo-secret   # JWT 签名密钥；生产用 QT_AUTH__SECRET 覆盖
+  token_ttl_s: 43200                  # 令牌有效期：12 小时
+  dev_header_bypass: true             # 演示旁路：允许 X-User-Id/X-Role 绕过 JWT；
+                                      # ★既有 chat 页面过渡期依赖此项，生产必须改 false
+
 llm:
   # ---- 对话模型供应商（OpenAI 兼容协议，换供应商只改这里）----
   provider: openai_compatible        # 预留字段：后续阶段可扩展 ollama / azure 等
@@ -29,3 +36,14 @@ retrieval:
   top_k: 3                          # 最终进入提示词的条数
   recall: 10                        # 每个通道各自召回的候选数（融合前）
   rrf_k: 60                         # RRF 融合常数
+
+chat:
+  # ---- 问答接口（docs/chat-api.md）----
+  db_path: data/trace.db            # SQLite 库文件（会话/消息/引用三表）
+  kb_index_dir: data/phase1_index   # 检索索引目录（--ingest 产物）
+  history_turns: 6                  # 每次请求携带的最近历史轮数
+  history_max_chars: 6000           # 历史字符预算（超出从最旧侧成对丢弃）
+  question_max_chars: 1000          # 单个问题上限
+  stream_timeout_s: 60              # 流式生成超时（截断而非失败）
+  rate_limit_per_min: 20            # 单会话每分钟消息数上限
+  title_max_len: 20                 # 会话标题取首条问题前 N 字

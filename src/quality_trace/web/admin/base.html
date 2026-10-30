@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<!-- 主管后台布局模板：类 SaaS 风格，浅色主题；子模板用块填充内容 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}质量主管后台{% endblock %} · quality-trace</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+         background: #f5f6f8; color: #26303b; }
+  .layout { display: flex; min-height: 100vh; }
+  .side { width: 200px; background: #1f2b3a; color: #cfd8e3;
+          display: flex; flex-direction: column; padding: 16px 0; }
+  .side .brand { color: #fff; font-weight: bold; padding: 0 20px 18px;
+                 border-bottom: 1px solid #324155; margin-bottom: 14px; }
+  .side a { display: block; padding: 11px 20px; color: #cfd8e3;
+            text-decoration: none; font-size: 14px; }
+  .side a:hover { background: #28374a; }
+  .side a.on { background: #2f6fed; color: #fff; border-radius: 4px; }
+  .side .who { margin-top: auto; padding: 14px 20px; font-size: 12px;
+               color: #8fa1b5; border-top: 1px solid #324155; }
+  .main { flex: 1; padding: 26px 34px; max-width: 1160px; }
+  h1 { font-size: 20px; margin-bottom: 18px; }
+  .card { background: #fff; border-radius: 8px; padding: 22px;
+          box-shadow: 0 1px 3px rgba(16,32,60,.08); margin-bottom: 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: #6b7787; font-weight: normal;
+       padding: 8px 10px; border-bottom: 1px solid #e6e9ef; }
+  td { padding: 10px; border-bottom: 1px solid #f0f2f6; vertical-align: top; }
+  .tag { display: inline-block; padding: 2px 9px; border-radius: 10px;
+         font-size: 12px; }
+  .tag.on  { background: #e7f6e9; color: #217a37; }
+  .tag.off { background: #fdecec; color: #b0343c; }
+  .tag.std { background: #e8f0fe; color: #1d4fc4; }
+  .tag.sop { background: #f3ecfb; color: #6d3ab8; }
+  .tag.cas { background: #fdf3e3; color: #a06a10; }
+  .btn { display: inline-block; border: 0; border-radius: 6px; padding: 8px 16px;
+         font-size: 13px; cursor: pointer; background: #2f6fed; color: #fff; }
+  .btn.ghost { background: #fff; color: #2f6fed; border: 1px solid #2f6fed; }
+  .btn.danger { background: #fff; color: #b0343c; border: 1px solid #d9a7ab; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .msg { padding: 10px 14px; border-radius: 6px; margin-bottom: 14px;
+         font-size: 13px; display: none; }
+  .msg.ok  { display: block; background: #e7f6e9; color: #217a37; }
+  .msg.err { display: block; background: #fdecec; color: #b0343c; }
+  .msg.warn { display: block; background: #fdf3e3; color: #a06a10; }
+  form.inline { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+  label { font-size: 13px; color: #4a5568; display: block; margin-bottom: 4px; }
+  input, select, textarea { border: 1px solid #cbd3de; border-radius: 6px;
+       padding: 8px 10px; font-size: 13px; font-family: inherit; }
+  textarea { width: 100%; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .stat { background: #fff; border-radius: 8px; padding: 18px 20px;
+           box-shadow: 0 1px 3px rgba(16,32,60,.08); }
+  .stat .num { font-size: 26px; font-weight: bold; color: #1f2b3a; }
+  .stat .lbl { font-size: 12px; color: #6b7787; margin-top: 4px; }
+  .muted { color: #8a94a3; font-size: 12px; }
+  details.chunk { margin: 6px 0; }
+  details.chunk pre { background: #f6f8fa; padding: 10px; border-radius: 6px;
+       font-size: 12px; white-space: pre-wrap; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="side">
+    <div class="brand">quality-trace 主管后台</div>
+    <a href="/admin/" class="{% block nav_dash %}{% endblock %}">仪表盘</a>
+    <a href="/admin/documents" class="{% block nav_docs %}{% endblock %}">知识库管理</a>
+    <a href="/admin/prompts" class="{% block nav_prompts %}{% endblock %}">提示词模板</a>
+    <a href="/admin/audit" class="{% block nav_audit %}{% endblock %}">对话审计</a>
+    <a href="/admin/attributions" class="{% block nav_attr %}{% endblock %}">归因审批</a>
+    <div class="who">
+      {{ user.display_name }}（{{ user.role == 'quality_manager' and '质量主管' or user.role }}）<br>
+      <a href="/admin/logout" style="color:#8fa1b5">退出登录</a>
+    </div>
+  </nav>
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

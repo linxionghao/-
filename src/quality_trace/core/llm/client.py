@@ -73,6 +73,61 @@ def call_llm(
         raise LLMUnavailable(f"LLM 调用失败: {exc}") from exc
 
 
+def stream_chat(
+    messages: List[Dict],
+    llm_cfg: Dict,
+    api_key: str,
+    *,
+    temperature: float = 0.2,
+    max_tokens: int = 1500,
+):
+    """流式调用 LLM，逐段 yield 增量文本（SSE 场景用）。
+
+    决策 B①：复用 requests（stream=True），不引入 httpx；调用方用
+    asyncio.to_thread 把本生成器放到线程里跑，避免阻塞事件循环。
+
+    异常:
+        LLMUnavailable：连接失败 / 非 2xx / 首块解析失败（与 call_llm 一致）。
+        流中途的网络中断由调用方捕获，按降级码 50401 处理（回答截断）。
+    """
+    if not api_key:
+        raise LLMUnavailable("API Key 为空（调用方未传入有效 Key）")
+    import json as _json  # 延迟导入，保持 core 轻加载
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    url = llm_cfg["base_url"].rstrip("/") + "/chat/completions"
+    payload = {
+        "model": llm_cfg["model"],
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": True,                      # 开启 SSE 流式
+    }
+    try:
+        resp = requests.post(
+            url, headers=headers, json=payload, stream=True,
+            timeout=llm_cfg.get("timeout_s", 30),
+        )
+        resp.raise_for_status()
+        for raw in resp.iter_lines(decode_unicode=True):
+            if not raw or not raw.startswith("data:"):
+                continue                     # 跳过空行与心跳注释
+            data = raw[len("data:"):].strip()
+            if data == "[DONE]":
+                break                        # 供应商的结束标记
+            try:
+                delta = _json.loads(data)["choices"][0]["delta"]
+            except Exception:                # noqa: BLE001 —— 单个坏块不致命，跳过
+                continue
+            text = delta.get("content")
+            if text:
+                yield text
+    except LLMUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise LLMUnavailable(f"LLM 流式调用失败: {exc}") from exc
+
+
 def embed_texts(texts: List[str], emb_cfg: Dict, api_key: str) -> np.ndarray:
     """批量向量化（OpenAI 兼容 /embeddings）。
 

@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}归因单详情{% endblock %}
+{% block nav_attr %}on{% endblock %}
+{% block content %}
+<h1>归因单详情</h1>
+
+{% if not_found %}
+<div class="card"><p class="muted">归因单不存在或已被删除。</p></div>
+{% else %}
+
+<div class="card">
+  <p><b>归因单：</b>{{ attribution.attribution_id }}
+    　<b>状态：</b>
+     {% if attribution.status == 'submitted' %}<span class="tag std">待审</span>{% endif %}
+     {% if attribution.status == 'approved' %}<span class="tag on">已批准</span>{% endif %}
+     {% if attribution.status == 'rejected' %}<span class="tag off">已退回</span>{% endif %}
+  </p>
+  <p style="margin-top:8px"><b>缺陷单：</b>{{ attribution.defect_no }}
+    　<b>工单：</b>{{ defect.work_order_id or '—' }}
+    　<b>工序：</b>{{ defect.op_code or '—' }}
+    　<b>缺陷码：</b>{{ defect.defect_code or '—' }}
+    　<b>严重度：</b>{{ defect.severity or '—' }}</p>
+  <p style="margin-top:8px"><b>缺陷描述：</b>{{ defect.description or '—' }}</p>
+  <p class="muted" style="margin-top:8px">
+    提交人 {{ attribution.submitted_by_name }} · {{ attribution.submitted_at }}
+    {% if attribution.decided_at %} · 审批人 {{ attribution.decided_by_name }} · {{ attribution.decided_at }}{% endif %}
+  </p>
+</div>
+
+<div class="card">
+  <h1 style="font-size:15px">L3 因果假设（恒标「待验证」——系统只到假设，定责在人工）</h1>
+  <p style="margin-top:8px; white-space:pre-wrap">{{ attribution.hypothesis_text }}</p>
+</div>
+
+<div class="card">
+  <h1 style="font-size:15px">证据链（{{ evidence|length }} 条）</h1>
+  <table style="margin-top:8px">
+    <tr><th>#</th><th>类型</th><th>内容</th><th>来源</th></tr>
+    {% for e in evidence %}
+    <tr>
+      <td class="muted">{{ loop.index }}</td>
+      <td><span class="tag std">{{ e.type or e.kind or 'evidence' }}</span></td>
+      <td>{{ e.text or e.content or e.description or e | string }}</td>
+      <td class="muted">{{ e.source or e.ref or '—' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted" style="padding:14px">证据链为空</td></tr>
+    {% endfor %}
+  </table>
+  <details class="chunk" style="margin-top:10px">
+    <summary class="muted" style="cursor:pointer">查看原始 evidence_json</summary>
+    <pre>{{ attribution.evidence_json }}</pre>
+  </details>
+</div>
+
+{% if attribution.decision_note %}
+<div class="card">
+  <h1 style="font-size:15px">审批意见</h1>
+  <p style="margin-top:8px">{{ attribution.decision_note }}</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h1 style="font-size:15px">审批动作与导出</h1>
+  <div id="msg" class="msg"></div>
+  <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap">
+    {% if attribution.status == 'submitted' %}
+    <button class="btn" id="btn-approve">批准</button>
+    <button class="btn danger" id="btn-reject">退回（必填意见）</button>
+    <a class="btn ghost" id="btn-export"
+       href="/api/v1/admin/attributions/{{ attribution.attribution_id }}/export-8d">导出 8D 草稿（Markdown）</a>
+    {% elif attribution.status == 'approved' %}
+    <a class="btn" href="/api/v1/admin/attributions/{{ attribution.attribution_id }}/export-8d">导出 8D 草稿（Markdown）</a>
+    <span class="muted" style="align-self:center">已批准：可导出 8D 草稿</span>
+    {% else %}
+    <span class="muted">已退回：等待质量工程师修改后重新提交</span>
+    {% endif %}
+    <a class="btn ghost" href="/admin/attributions">返回列表</a>
+  </div>
+  <p class="muted" style="margin-top:10px">
+    导出说明：库中已有草稿则直接下载；否则现场调大模型生成并缓存。大模型不可用时返回中文错误，不会产生半截文件。
+  </p>
+</div>
+
+<script>
+const ATTR_ID = "{{ attribution.attribution_id }}";
+const msg = document.getElementById("msg");
+
+async function decide(action) {
+  let note = "";
+  if (action === "reject") {
+    note = prompt("退回意见（必填，工程师需要修改方向）：", "");
+    if (!note || !note.trim()) {
+      msg.className = "msg err";
+      msg.textContent = "退回必须填写意见";
+      return;
+    }
+  } else if (action === "approve") {
+    note = prompt("批准备注（可留空）：", "") || "";
+    if (!confirm("确认批准该归因单？")) return;
+  }
+  const resp = await fetch(
+    "/api/v1/admin/attributions/" + ATTR_ID + "/" + action, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note: note }),
+    });
+  const data = await resp.json();
+  msg.className = data.code === 0 ? "msg ok" : "msg err";
+  msg.textContent = data.message;
+  if (data.code === 0) setTimeout(() => location.reload(), 700);
+}
+
+document.getElementById("btn-approve")?.addEventListener("click", () => decide("approve"));
+document.getElementById("btn-reject")?.addEventListener("click", () => decide("reject"));
+</script>
+{% endblock %}

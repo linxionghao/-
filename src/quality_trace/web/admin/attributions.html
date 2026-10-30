@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}归因审批{% endblock %}
+{% block nav_attr %}on{% endblock %}
+{% block content %}
+<h1>归因审批 <span class="muted" style="font-size:13px">（待审 {{ pending_total }} 张）</span></h1>
+
+<div class="card">
+  <!-- Tab：状态过滤（服务端渲染，链接可分享） -->
+  <div style="display:flex; gap:8px; margin-bottom:14px">
+    <a class="btn {{ status == 'submitted' and '' or 'ghost' }}" href="/admin/attributions?status=submitted">待审</a>
+    <a class="btn {{ status == 'approved' and '' or 'ghost' }}" href="/admin/attributions?status=approved">已批准</a>
+    <a class="btn {{ status == 'rejected' and '' or 'ghost' }}" href="/admin/attributions?status=rejected">已退回</a>
+    <a class="btn {{ status == 'all' and '' or 'ghost' }}" href="/admin/attributions?status=all">全部</a>
+  </div>
+  <table>
+    <tr><th>归因单</th><th>缺陷单</th><th>工单 / 工序</th><th>L3 假设（待验证）</th><th>提交人</th><th>状态</th><th>操作</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td class="muted" title="{{ r.attribution_id }}">{{ r.attribution_id[:14] }}</td>
+      <td>{{ r.defect_no }}</td>
+      <td class="muted">{{ r.defect.work_order_id or '—' }}{{ r.defect.op_code and (' / ' ~ r.defect.op_code) or '' }}</td>
+      <td>{{ (r.hypothesis_text[:36] ~ (r.hypothesis_text|length > 36 and '…' or '')) or '—' }}</td>
+      <td>{{ r.submitted_by_name }}</td>
+      <td>
+        {% if r.status == 'submitted' %}<span class="tag std">待审</span>{% endif %}
+        {% if r.status == 'approved' %}<span class="tag on">已批准</span>{% endif %}
+        {% if r.status == 'rejected' %}<span class="tag off">已退回</span>{% endif %}
+      </td>
+      <td><a class="btn ghost" style="padding:4px 10px" href="/admin/attributions/{{ r.attribution_id }}">查看 / 审批</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="muted" style="text-align:center; padding:24px">当前状态没有归因单</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

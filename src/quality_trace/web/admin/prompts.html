@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}提示词模板{% endblock %}
+{% block nav_prompts %}on{% endblock %}
+{% block content %}
+<h1>系统提示词模板管理</h1>
+
+<div id="msg" class="msg"></div>
+
+<div class="card">
+  <p style="font-size:13px;color:#4a5568;margin-bottom:12px">
+    系统提示词<strong>存数据库、不写死在代码里</strong>；保存后
+    <strong>下一条问答立即生效</strong>（服务端每次请求实时读取）。
+    每次修改记录修改人与时间。修改内容请保留「只依据材料回答 / 必须带引用编号 /
+    禁止宣称根因已确定」这三条红线，否则会触发对话审计的越界标记。
+  </p>
+  <form id="tpl-form">
+    <label>模板名称</label>
+    <input name="name" id="tpl-name" style="width:340px"
+           value="{{ template.name if template else '默认系统提示词' }}">
+    <label style="margin-top:12px">提示词内容</label>
+    <textarea name="content" id="tpl-content" rows="10"
+              placeholder="{{ '尚无模板——留空提交即以内置默认模板初始化' if not template else '' }}">{{ template.content if template else '' }}</textarea>
+    <p style="margin-top:12px">
+      <button class="btn" type="submit" id="btn-save">保存并立即生效</button>
+      <span class="muted">当前模板：{{ template.template_id if template else '（未初始化）' }}
+        · 最后修改：{{ template.updated_at or '—' }} · {{ template.updated_by_name or '—' }}</span>
+    </p>
+  </form>
+</div>
+
+<div class="card">
+  <h1 style="font-size:15px;margin-bottom:10px">修改历史（只增不删，可审计）</h1>
+  <table>
+    <thead><tr><th>时间</th><th>修改人</th><th>内容摘要</th></tr></thead>
+    <tbody>
+    {% for h in history %}
+      <tr>
+        <td class="muted">{{ h.updated_at }}</td>
+        <td>{{ h.updated_by_name or '系统' }}</td>
+        <td class="muted">{{ h.content[:60] }}{% if h.content|length > 60 %}…{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3" class="muted" style="padding:18px">还没有修改记录</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+document.getElementById("tpl-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const content = document.getElementById("tpl-content").value.trim();
+  const name = document.getElementById("tpl-name").value.trim();
+  const msg = document.getElementById("msg");
+  const tplId = "{{ template.template_id if template else '' }}";
+  if (!content) { msg.className = "msg err"; msg.textContent = "提示词内容不能为空"; return; }
+  const btn = document.getElementById("btn-save");
+  btn.disabled = true; btn.textContent = "保存中…";
+  try {
+    // 库里还没有模板 → POST 创建（upsert）；已有 → PUT 更新 + 写历史
+    const resp = tplId
+      ? await fetch("/api/v1/admin/prompt-templates/" + tplId, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name, content: content }),
+        })
+      : await fetch("/api/v1/admin/prompt-templates", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name, content: content }),
+        });
+    const data = await resp.json();
+    if (data.code !== 0) throw new Error(data.message);
+    msg.className = "msg ok";
+    msg.textContent = "已保存，下一条回答立即生效";
+    setTimeout(() => location.reload(), 800);
+  } catch (err) {
+    msg.className = "msg err"; msg.textContent = "保存失败：" + err.message;
+    btn.disabled = false; btn.textContent = "保存并立即生效";
+  }
+});
+</script>
+{% endblock %}

@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 SYSTEM_PROMPT = (
     "你是制造业质量知识库问答助手。请严格遵守：\n"
@@ -20,6 +20,26 @@ SYSTEM_PROMPT = (
     "3) 回答中每条信息后用【Cn】标注出处编号，无材料支撑的内容必须声明'材料未覆盖'；\n"
     "4) 材料不足或无相关内容时，直接回答'知识库中未找到相关依据'。"
 )
+
+
+def build_chat_messages(
+    history: List[Dict], question: str, retrieved: List[Dict],
+    system_prompt: Optional[str] = None,
+) -> List[Dict]:
+    """带历史上下文的消息装配（/chat 接口用）。
+
+    顺序：system → 最近 N 轮历史（只带正文，避免旧引用污染）→ 当前问题+材料。
+    引用材料只在最后一轮用户消息里出现，历史 assistant 不带材料。
+
+    system_prompt：主管后台可在线改系统提示词（存库不写死），
+    传入即用；为空时退回内置 SYSTEM_PROMPT（建库种子）。
+    """
+    messages = [{"role": "system",
+                 "content": system_prompt or SYSTEM_PROMPT}]
+    for turn in history:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.extend(build_messages(question, retrieved)[1:])   # 复用材料装配，跳过 system
+    return messages
 
 
 def build_messages(question: str, retrieved: List[Dict]) -> List[Dict]:

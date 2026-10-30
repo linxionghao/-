@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}对话审计{% endblock %}
+{% block nav_audit %}on{% endblock %}
+{% block content %}
+<h1>对话审计</h1>
+
+<div class="card">
+  <!-- 筛选栏：GET 表单，服务端渲染筛选结果（刷新/分享链接均可） -->
+  <form class="inline" method="get" action="/admin/audit">
+    <div>
+      <label>提问者角色</label>
+      <select name="role">
+        <option value="">全部</option>
+        <option value="quality_engineer" {% if filters.role == 'quality_engineer' %}selected{% endif %}>质量工程师</option>
+      </select>
+    </div>
+    <div>
+      <label>批次号</label>
+      <input name="batch_no" value="{{ filters.batch_no }}" placeholder="如 WO-20261030-001">
+    </div>
+    <div>
+      <label>业务时间起</label>
+      <input type="date" name="date_from" value="{{ filters.date_from }}">
+    </div>
+    <div>
+      <label>业务时间止</label>
+      <input type="date" name="date_to" value="{{ filters.date_to }}">
+    </div>
+    <div>
+      <label>&nbsp;</label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px">
+        <input type="checkbox" name="only_flagged" value="1"
+               {% if filters.only_flagged %}checked{% endif %} style="width:auto"> 只看越界
+      </label>
+    </div>
+    <button class="btn" type="submit">筛选</button>
+    <a class="btn ghost" href="/admin/audit">重置</a>
+    <button class="btn ghost" type="button" id="btn-rescan">补扫历史消息</button>
+  </form>
+  <div id="msg" class="msg"></div>
+</div>
+
+<div class="card">
+  <p class="muted" style="margin-bottom:10px">
+    共 {{ messages|length }} 条回答，其中 <b style="color:#b0343c">{{ flagged_count }}</b> 条命中越界规则（红色行，机器标记为「疑似」，需人工核查）
+  </p>
+  <table>
+    <tr><th>时间</th><th>提问者</th><th>批次</th><th>回答摘要</th><th>越界标记</th><th>核查</th><th>详情</th></tr>
+    {% for m in messages %}
+    {% set flagged = m.flag_root_cause or m.flag_no_citation or m.flag_stale_version %}
+    <tr style="{{ flagged and 'background:#fdf3f3' or '' }}">
+      <td class="muted">{{ m.occurred_at[:19] }}</td>
+      <td>{{ m.session_role }}</td>
+      <td class="muted">{{ m.batch_no or '—' }}</td>
+      <td>{{ (m.content[:40] ~ (m.content|length > 40 and '…' or '')) or '（无正文）' }}</td>
+      <td>
+        {% if m.flag_root_cause %}<span class="tag off">疑似定根因</span>{% endif %}
+        {% if m.flag_no_citation %}<span class="tag off">无引用作答</span>{% endif %}
+        {% if m.flag_stale_version %}<span class="tag off">引用废止版</span>{% endif %}
+        {% if not flagged %}<span class="tag on">正常</span>{% endif %}
+      </td>
+      <td>
+        {% if m.reviewed_by %}
+          <span class="tag on" title="{{ m.reviewed_note or '' }}">已核查</span>
+        {% elif flagged %}
+          <button class="btn ghost" style="padding:4px 10px"
+                  onclick="review('{{ m.message_id }}')">核查</button>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>
+        <details class="chunk">
+          <summary class="muted" style="cursor:pointer">展开（引用 {{ m.citations|length }} 条）</summary>
+          <p style="margin-top:8px; font-size:12px; white-space:pre-wrap; background:#f6f8fa; padding:10px; border-radius:6px">{{ m.content or '（无正文）' }}</p>
+          {% for c in m.citations %}
+          <p style="font-size:12px; margin-top:6px">
+            [C{{ c.seq }}] {{ c.source_file }} · {{ c.clause or '无条款' }} · 版本 {{ c.version or '?' }}
+            <span class="muted">（得分 {{ c.score }}）</span>
+          </p>
+          {% endfor %}
+        </details>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="muted" style="text-align:center; padding:24px">没有符合条件的记录</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script>
+// 核查动作：POST /api/v1/admin/audit/messages/{id}/review（Cookie 自动携带）
+async function review(messageId) {
+  const note = prompt("核查备注（可留空）：") || "";
+  const resp = await fetch(
+    "/api/v1/admin/audit/messages/" + messageId + "/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note: note }),
+    });
+  const data = await resp.json();
+  const msg = document.getElementById("msg");
+  msg.className = data.code === 0 ? "msg ok" : "msg err";
+  msg.textContent = data.code === 0 ? "已标记核查，正在刷新…" : data.message;
+  if (data.code === 0) setTimeout(() => location.reload(), 600);
+}
+
+// 补扫：对全部历史回答重跑三规则（不覆盖人工核查结论）
+document.getElementById("btn-rescan").addEventListener("click", async () => {
+  const resp = await fetch("/api/v1/admin/audit/rescan", { method: "POST" });
+  const data = await resp.json();
+  const msg = document.getElementById("msg");
+  msg.className = data.code === 0 ? "msg ok" : "msg err";
+  msg.textContent = data.message;
+  if (data.code === 0) setTimeout(() => location.reload(), 900);
+});
+</script>
+{% endblock %}

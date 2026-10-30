@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}仪表盘{% endblock %}
+{% block nav_dash %}on{% endblock %}
+{% block content %}
+<h1>仪表盘</h1>
+<div class="grid">
+  <div class="stat"><div class="num">{{ stats.docs_active }}</div><div class="lbl">在架文档</div></div>
+  <div class="stat"><div class="num">{{ stats.docs_archived }}</div><div class="lbl">已下架（保留）</div></div>
+  <div class="stat"><div class="num">{{ stats.chunks }}</div><div class="lbl">知识库切片</div></div>
+  <div class="stat"><div class="num">{{ stats.messages }}</div><div class="lbl">问答消息</div></div>
+</div>
+<div class="grid" style="grid-template-columns: repeat(4, 1fr); margin-top:14px">
+  <div class="stat"><div class="num">{{ stats.sessions }}</div><div class="lbl">问答会话</div></div>
+  <div class="stat"><div class="num">{{ stats.users }}</div><div class="lbl">系统用户</div></div>
+  <a class="stat" href="/admin/audit" style="text-decoration:none">
+    <div class="num" style="color:{{ stats.flagged and '#b0343c' or '#1f2b3a' }}">{{ stats.flagged }}</div>
+    <div class="lbl">待核查越界回答</div></a>
+  <a class="stat" href="/admin/attributions" style="text-decoration:none">
+    <div class="num">{{ stats.attr_pending }}</div><div class="lbl">待审批归因单</div></a>
+</div>
+<div class="card" style="margin-top:18px">
+  <h1 style="font-size:15px">待办</h1>
+  <ul style="margin:10px 0 0 18px; font-size:13px; color:#4a5568; line-height:1.9">
+    {% if stats.flagged %}<li><a href="/admin/audit?only_flagged=1">{{ stats.flagged }} 条越界回答待人工核查</a></li>{% endif %}
+    {% if stats.attr_pending %}<li><a href="/admin/attributions">{{ stats.attr_pending }} 张归因单待审批</a></li>{% endif %}
+    {% if not stats.flagged and not stats.attr_pending %}<li>暂无待办</li>{% endif %}
+  </ul>
+</div>
+{% endblock %}

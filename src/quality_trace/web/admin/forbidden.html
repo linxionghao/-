@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}无权访问{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>403 · 当前角色无权访问主管后台</h1>
+  <p style="margin-top:10px;font-size:14px;color:#4a5568">
+    你以「{{ user.display_name }}」身份登录，该功能仅限<strong>质量主管</strong>角色。
+  </p>
+  <p style="margin-top:14px">
+    <a class="btn ghost" href="/admin/logout">换个账号登录</a>
+    <a class="btn ghost" href="/">返回问答首页</a>
+  </p>
+</div>
+{% endblock %}

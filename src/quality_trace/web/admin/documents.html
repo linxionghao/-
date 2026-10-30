@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}知识库管理{% endblock %}
+{% block nav_docs %}on{% endblock %}
+{% block content %}
+<h1>质量标准知识库管理</h1>
+
+<div id="msg" class="msg"></div>
+
+<div class="card">
+  <h1 style="font-size:15px;margin-bottom:12px">上传文档（Markdown / PDF，≤10MB）</h1>
+  <!-- 上传走 JSON 接口（multipart），成功后整页刷新由服务端重新直出表格 -->
+  <form id="upload-form">
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+      <div><label>文件</label><input type="file" name="file" accept=".md,.pdf" required></div>
+      <div><label>类型</label>
+        <select name="doc_type" required>
+          <option value="standard">检验标准</option>
+          <option value="sop_manual">工艺文件 / SOP / 设备手册</option>
+          <option value="8d_case">历史 8D / 异常案例</option>
+        </select>
+      </div>
+      <div><label>版本号 *</label><input name="version" placeholder="如 v2" required></div>
+      <div><label>生效起 *</label><input name="effective_from" placeholder="2026-03-01" required></div>
+      <div><label>生效止 *</label><input name="effective_to" placeholder="2027-03-01" required></div>
+      <button class="btn" type="submit" id="btn-upload">上传并入库</button>
+    </div>
+    <p class="muted" style="margin-top:8px">
+      * 版本号与生效区间必填；同名同版本不允许重复上传。
+      上传后自动切片并重建检索索引；向量化服务不可用时文档照常入库（仅关键词检索）。
+    </p>
+  </form>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr>
+      <th>文档</th><th>类型</th><th>版本</th><th>生效区间</th><th>切片</th>
+      <th>向量</th><th>状态</th><th>操作</th>
+    </tr></thead>
+    <tbody>
+    {% for d in docs %}
+      <tr>
+        <td><b>{{ d.doc_name }}</b><br><span class="muted">{{ d.recorded_at }} 上传</span></td>
+        <td>
+          {% if d.doc_type == 'standard' %}<span class="tag std">检验标准</span>
+          {% elif d.doc_type == 'sop_manual' %}<span class="tag sop">工艺文件</span>
+          {% else %}<span class="tag cas">历史8D</span>{% endif %}
+        </td>
+        <td>{{ d.version }}</td>
+        <td class="muted">{{ d.effective_from }}<br>至 {{ d.effective_to }}</td>
+        <td>{{ d.chunk_count }}</td>
+        <td class="muted">{{ '已向量化' if d.vector_status == 'ok' else '仅关键词' }}</td>
+        <td>{% if d.status == 'active' %}<span class="tag on">在架</span>
+            {% else %}<span class="tag off">已下架</span>{% endif %}</td>
+        <td>
+          {% if d.status == 'active' %}
+            <button class="btn danger" data-act="archive" data-id="{{ d.doc_id }}">下架</button>
+          {% else %}
+            <button class="btn ghost" data-act="restore" data-id="{{ d.doc_id }}">恢复</button>
+          {% endif %}
+          <button class="btn ghost" data-act="chunks" data-id="{{ d.doc_id }}">切片</button>
+        </td>
+      </tr>
+      <tr style="display:none" id="chunks-{{ d.doc_id }}">
+        <td colspan="8"></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="muted" style="padding:24px">
+        知识库还没有登记文档——上传一份，或运行 <code>python scripts/seed_demo_data.py --kb</code>
+        把 <code>data/knowledge/</code> 的示例语料登记入库。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="margin-top:10px">
+    下架 = 废止（历史版本仅作审计留档，永不物理删除）；同名文档允许多版本并存，检索只用「在架」版本。
+  </p>
+</div>
+
+<script>
+// ---------- 上传：multipart POST 到 JSON 接口（Cookie 鉴权自动携带） ----------
+document.getElementById("upload-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("btn-upload");
+  btn.disabled = true; btn.textContent = "上传中…";
+  const msg = document.getElementById("msg");
+  msg.className = "msg";
+  try {
+    const resp = await fetch("/api/v1/admin/documents",
+      { method: "POST", body: new FormData(e.target) });
+    const data = await resp.json();
+    if (data.code !== 0) { throw new Error(data.message); }
+    // 50004 属降级：黄条提示但仍然成功
+    if (data.data.degraded) {
+      msg.className = "msg warn"; msg.textContent = "已入库：" + data.data.degraded.message;
+    } else {
+      msg.className = "msg ok";
+      msg.textContent = "上传成功：" + data.data.doc.doc_name + " "
+        + data.data.doc.version + "（" + data.data.chunk_count + " 片，索引已重建）";
+    }
+    setTimeout(() => location.reload(), 900);
+  } catch (err) {
+    msg.className = "msg err"; msg.textContent = "上传失败：" + err.message;
+    btn.disabled = false; btn.textContent = "上传并入库";
+  }
+});
+
+// ---------- 下架 / 恢复：二次确认（废止是敏感操作） ----------
+document.querySelectorAll("button[data-act]").forEach((b) => {
+  b.addEventListener("click", async () => {
+    const id = b.dataset.id, act = b.dataset.act;
+    if (act === "chunks") { return toggleChunks(id, b); }
+    const hint = act === "archive"
+      ? "确认下架？下架后该文档即刻退出检索（历史保留、可恢复）。"
+      : "确认恢复上架？该文档切片将重新进入检索。";
+    if (!confirm(hint)) return;
+    const resp = await fetch("/api/v1/admin/documents/" + id + "/" + act,
+      { method: "POST" });
+    const data = await resp.json();
+    const msg = document.getElementById("msg");
+    msg.className = data.code === 0 ? "msg ok" : "msg err";
+    msg.textContent = data.code === 0 ? "操作成功，索引已重建" : data.message;
+    if (data.code === 0) setTimeout(() => location.reload(), 700);
+  });
+});
+
+// ---------- 切片查看：就地展开（核对切分效果） ----------
+async function toggleChunks(id, btn) {
+  const row = document.getElementById("chunks-" + id);
+  if (row.style.display !== "none") { row.style.display = "none"; return; }
+  const resp = await fetch("/api/v1/admin/documents/" + id + "/chunks");
+  const data = await resp.json();
+  const cell = row.querySelector("td");
+  if (data.code !== 0) { cell.textContent = data.message; }
+  else {
+    cell.innerHTML = data.data.chunks.map((c) =>
+      "<details class='chunk'><summary>#" + c.seq_no + " " + (c.clause || "") +
+      "（" + c.char_len + " 字）</summary><pre>" +
+      c.content.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</pre></details>"
+    ).join("");
+  }
+  row.style.display = "";
+}
+</script>
+{% endblock %}

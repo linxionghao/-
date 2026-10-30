@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<!-- 管理后台登录页：独立页（不带侧栏），表单 POST 到 /admin/login -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · 质量主管后台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+         background: #f5f6f8; display: flex; align-items: center;
+         justify-content: center; min-height: 100vh; color: #26303b; }
+  .box { background: #fff; border-radius: 10px; padding: 34px 38px; width: 360px;
+         box-shadow: 0 4px 16px rgba(16,32,60,.10); }
+  h1 { font-size: 18px; margin-bottom: 6px; }
+  .sub { font-size: 12px; color: #8a94a3; margin-bottom: 22px; }
+  label { font-size: 13px; color: #4a5568; display: block; margin: 12px 0 4px; }
+  input { width: 100%; border: 1px solid #cbd3de; border-radius: 6px;
+          padding: 10px; font-size: 14px; }
+  button { width: 100%; margin-top: 22px; border: 0; border-radius: 6px;
+           padding: 11px; font-size: 14px; background: #2f6fed; color: #fff;
+           cursor: pointer; }
+  .err { background: #fdecec; color: #b0343c; border-radius: 6px;
+         padding: 10px 12px; font-size: 13px; margin-top: 14px; }
+  .hint { margin-top: 18px; font-size: 12px; color: #8a94a3;
+          border-top: 1px dashed #e6e9ef; padding-top: 12px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>quality-trace 质量主管后台</h1>
+  <div class="sub">知识库管理 · 提示词模板 · 对话审计 · 归因审批</div>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <form method="post" action="/admin/login">
+    <label>登录名</label>
+    <input name="username" required autofocus autocomplete="username">
+    <label>密码</label>
+    <input name="password" type="password" required autocomplete="current-password">
+    <button type="submit">登 录</button>
+  </form>
+  <div class="hint">演示账号：manager01 / manager01<br>
+    仅质量主管角色可进入后台；工程师问答入口在 <a href="/">首页</a>。</div>
+</div>
+</body>
+</html>
