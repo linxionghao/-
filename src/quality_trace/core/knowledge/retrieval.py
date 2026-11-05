@@ -40,6 +40,28 @@ Embedder = Callable[[str], np.ndarray]
 # embedder(text) -> 已归一化前的原始向量；失败抛 EmbeddingUnavailable
 
 _TOKEN_RE = re.compile(r"[\u4e00-\u9fff a-zA-Z0-9]+")
+# 中英混排再切分：汉字段 或 ASCII 段（含小数点的规格值，如 19.98mm / M8）
+_MIX_RE = re.compile(r"[\u4e00-\u9fff]+|[a-zA-Z0-9.]+")
+
+
+def _fallback_tokens(part: str) -> List[str]:
+    """无 jieba 时的切分：汉字段取二元组，ASCII 段整体保留。
+
+    为什么不能直接对整段判 `fullmatch(汉字)`：`_TOKEN_RE` 的字符类里含空格，
+    "螺纹外径 19.98mm 公差" 会整体作为一个 seg 传进来，fullmatch 失败后
+    落到 else 分支，整句变成**一个词**——检索直接失效。降级路径必须能处理
+    中英混排，否则"装了 jieba 才对、不装就废"。
+    """
+    out: List[str] = []
+    for sub in _MIX_RE.findall(part):
+        if re.fullmatch(r"[\u4e00-\u9fff]+", sub):
+            if len(sub) == 1:
+                out.append(sub)                       # 单字：无法组成二元组
+            else:
+                out.extend(sub[i : i + 2] for i in range(len(sub) - 1))
+        else:
+            out.append(sub.lower())
+    return out
 
 
 def tokenize(text: str) -> List[str]:
@@ -51,10 +73,9 @@ def tokenize(text: str) -> List[str]:
             continue
         if HAS_JIEBA:
             tokens.extend(w.strip() for w in jieba.lcut(seg) if w.strip())
-        elif re.fullmatch(r"[\u4e00-\u9fff]+", seg):
-            tokens.extend(seg[i : i + 2] for i in range(len(seg) - 1))
         else:
-            tokens.append(seg.lower())
+            for part in seg.split():
+                tokens.extend(_fallback_tokens(part))
     return tokens
 
 
