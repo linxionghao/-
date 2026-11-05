@@ -1,0 +1,27 @@
+# Git 层面统一换行与二进制识别，避免 Windows 开发者提交 CRLF 造成整文件 diff。
+*.py   text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.csv  text eol=lf
+*.sh   text eol=lf
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+
+# 二进制：不做文本处理，不显示行级 diff
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.docx binary
+*.doc  binary
+*.pdf  binary
+*.db   binary
+*.faiss binary
+*.npy  binary
+
+# 语言统计：让 GitHub 的仓库语言占比不被生成的 HTML/JS 噪声干扰
+web/*.html linguist-detectable=true
