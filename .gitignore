@@ -46,3 +46,6 @@ Thumbs.db
 .env
 .env.*
 config/local.yaml
+
+# 工作区本地数据（会话/记忆），不进仓库
+.workbuddy/
