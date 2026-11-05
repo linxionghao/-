@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from quality_trace.api.deps import WEB_DIR, load_app_config
 from quality_trace.api.routers import admin as admin_router
+from quality_trace.api.routers import analytics as analytics_router
 from quality_trace.api.routers import admin_pages
 from quality_trace.api.routers import auth as auth_router
 from quality_trace.api.routers import chat as chat_router
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router.router)        # 主管后台 JSON 接口
     app.include_router(admin_pages.router)         # 主管后台页面（服务端渲染）
     app.include_router(defects_router.router)      # 班组长现场录入接口
+    app.include_router(analytics_router.router)    # 统计分析与 SPC 接口
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:

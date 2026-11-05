@@ -62,6 +62,7 @@ def build(
     cum = 0.0
     out: List[Dict[str, object]] = []
     for idx, r in enumerate(rows, start=1):
+        cum_before = cum
         cum += r["_w"]
         ratio = r["_w"] / total
         cum_ratio = cum / total
@@ -72,7 +73,7 @@ def build(
                 "value": round(r["_w"], 4),
                 "ratio": round(ratio, 6),
                 "cum_ratio": round(min(cum_ratio, 1.0), 6),
-                "abc": _abc(cum_ratio),
+                "abc": _abc(cum_before / total),
                 "raw": {k: v for k, v in r.items() if k != "_w"},
             }
         )
@@ -113,11 +114,21 @@ def build(
     }
 
 
-def _abc(cum_ratio: float) -> str:
-    """A: 累计 ≤80%；B: ≤95%；C: 其余。"""
-    if cum_ratio <= 0.8000001:
+def _abc(cum_before: float) -> str:
+    """ABC 分类：看**累计之前**的位置，不是累计之后。
+
+    这个细节决定了对错。假设只有一个原因，它占了 86%：
+    - 错的口径（看累计之后）：86% > 80%，于是被划进 B 类——"关键少数"里一个都没有；
+    - 对的口径（看累计之前）：累加前是 0%（< 80%），它是把累计推过 80% 的那一项，
+      所以是 A 类。
+
+    ABC 的本意是"哪些项目撑起了前 80%"，最后一个跨过 80% 线的项目**必然**属于 A，
+    哪怕它一个就占了 99%。写成 `cum_after <= 0.8` 是最常见的实现错误，
+    表现为"单因主导的场景下 A 类为空"，报表上无法解释。
+    """
+    if cum_before < 0.8 - 1e-9:
         return "A"
-    if cum_ratio <= 0.9500001:
+    if cum_before < 0.95 - 1e-9:
         return "B"
     return "C"
 

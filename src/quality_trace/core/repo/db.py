@@ -199,6 +199,33 @@ CREATE TABLE IF NOT EXISTS defect_code (
     status        TEXT NOT NULL DEFAULT 'active',      -- active / disabled
     sort_no       INTEGER NOT NULL DEFAULT 0
 );
+
+-- ---- 阶段 4：计量型实测值（SPC 的数据源）----
+-- 为什么单开一张表、而不是给 defect_item 加一列「实测值」：
+--   ① 缺陷单只记「不良」，而控制图要的是**合格件也测**的连续数据——
+--      只拿不良品的数据画控制图，等于只看病人算平均体温；
+--   ② 一个工单一次抽检 5 件，是 5 行，不是 1 行；
+--   ③ 量具、测量人、子组号都要留痕，塞进缺陷单会把它撑成宽表。
+CREATE TABLE IF NOT EXISTS meas_record (
+    record_id     TEXT PRIMARY KEY,
+    item_code     TEXT NOT NULL,                       -- 检验项目，如「外径」
+    work_order_id TEXT,
+    line_id       TEXT NOT NULL,
+    op_code       TEXT,
+    subgroup_no   INTEGER NOT NULL DEFAULT 1,          -- 子组序号（同一次抽检的 5 件同号）
+    value         REAL NOT NULL,                       -- 实测值
+    unit          TEXT NOT NULL DEFAULT 'mm',
+    usl           REAL,                                -- 规格上限（可空：只做控制图不做能力）
+    lsl           REAL,
+    gauge         TEXT,                                -- 量具编号（追溯量具误差用）
+    operator      TEXT,
+    occurred_at   TEXT NOT NULL,                       -- 业务时间：测量时刻
+    recorded_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meas_item_time
+    ON meas_record(item_code, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_meas_line_time
+    ON meas_record(line_id, occurred_at);
 """
 
 # ---- 增列迁移（SQLite 无 ADD COLUMN IF NOT EXISTS，逐条 try）----
@@ -838,9 +865,13 @@ def get_work_order(
 
 def insert_work_order(
     conn: sqlite3.Connection, work_order_id: str, product_name: str,
-    line_id: str, planned_qty: int = 0,
+    line_id: str, planned_qty: int = 0, occurred_at: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """新建工单（幂等：主键已存在则直接返回既有行）。"""
+    """新建工单（幂等：主键已存在则直接返回既有行）。
+
+    `occurred_at` 同 insert_defect：不良率的分母必须能和分子的时间对齐，
+    否则"这个月的不良"会去和"今天的产量"相除。
+    """
     row = conn.execute(
         "SELECT * FROM work_order WHERE work_order_id = ?", (work_order_id,)
     ).fetchone()
@@ -851,7 +882,7 @@ def insert_work_order(
         "INSERT INTO work_order"
         " (work_order_id, product_name, line_id, status, planned_qty,"
         "  occurred_at, recorded_at) VALUES (?,?,?, 'open', ?, ?, ?)",
-        (work_order_id, product_name, line_id, int(planned_qty), now, now),
+        (work_order_id, product_name, line_id, int(planned_qty), occurred_at or now, now),
     )
     conn.commit()
     return dict(conn.execute(
@@ -865,10 +896,15 @@ def insert_defect(
     defect_code: Optional[str] = None, suggest_json: str = "",
     client_draft_id: Optional[str] = None, status: str = "pending",
     is_backfill: bool = False, created_by: str = "",
+    occurred_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """新建缺陷单（幂等：主键或 client_draft_id 已存在则返回既有行）。
 
     双时间列：occurred_at 与 recorded_at 分别传；补录由调用方置 is_backfill。
+
+    `occurred_at` 可显式传入（默认 now）。补录场景必须传历史时刻，
+    否则"三个月前那批货"会被记成今天的不良——趋势图上就出现一个今天的尖峰，
+    而真正的历史位置是空的。演示数据与单测也靠这个参数造跨日数据。
     """
     row = conn.execute(
         "SELECT * FROM defect_item WHERE defect_no = ?", (defect_no,)
@@ -880,6 +916,7 @@ def insert_defect(
     if row:
         return dict(row)
     now = _now()
+    happened = occurred_at or now
     conn.execute(
         "INSERT INTO defect_item"
         " (defect_no, work_order_id, line_id, op_code, description, qty,"
@@ -888,7 +925,7 @@ def insert_defect(
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,? ,?,?,?,? ,?)",
         (defect_no, work_order_id, line_id, op_code, description, int(qty),
          severity, defect_code, suggest_json, None, client_draft_id,
-         status, int(is_backfill), now, now, created_by,
+         status, int(is_backfill), happened, now, created_by,
          now if status != "draft" else None),
     )
     conn.commit()
@@ -1106,3 +1143,300 @@ def set_attribution_draft(
         (draft_md, attribution_id),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# 分析取数（阶段 4 新增）
+#
+# 这一组函数与前面的"业务读写"有意分开：它们**只读**、不做业务判断、
+# 返回原始行，聚合计算放在 core/analytics 里做。分开的理由很实际：
+#   1. 统计口径要能被审计——SQL 里一个 GROUP BY 写错，没人看得出，
+#      而 Python 里的分组逻辑可以写单测；
+#   2. 同一批数据要被帕累托、控制图、趋势三个分析共用，
+#      如果各自写 SQL，三处的过滤条件迟早会不一致（一个按 recorded_at、
+#      另一个按 occurred_at，结论自然对不上）。
+# ---------------------------------------------------------------------------
+def query_defects(
+    conn: sqlite3.Connection,
+    *,
+    line_id: Optional[str] = None,
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    op_code: Optional[str] = None,
+    defect_code: Optional[str] = None,
+    col: str = "occurred_at",
+    limit: int = 20000,
+) -> List[Dict[str, Any]]:
+    """按条件取缺陷单原始行（分析用）。
+
+    两个容易踩的点：
+
+    - `col` 决定按哪个时间过滤。分析默认用 **occurred_at（业务时间）**，
+      因为"这批货是什么时候出的问题"要用发生时刻；而"这个月录了多少单"
+      要用 recorded_at。同一个报表里两者不能混，否则补录会让历史数据"倒流"——
+      三个月前那次停产的不良，会在今天被录进来，按 recorded_at 统计就成了"今天的不良"。
+    - `date_to` 自动补到当天 23:59:59。字符串比较下 "2026-11-30T09:00" > "2026-11-30"，
+      不补就会出现"筛到 11 月 30 日却查不到 30 日当天数据"的经典 bug。
+    """
+    if col not in ("occurred_at", "recorded_at"):
+        raise ValueError("时间列只能是 occurred_at 或 recorded_at")
+
+    sql = "SELECT * FROM defect_item WHERE 1=1"
+    params: List[Any] = []
+    if line_id:
+        sql += " AND line_id = ?"
+        params.append(line_id)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if op_code:
+        sql += " AND op_code = ?"
+        params.append(op_code)
+    if defect_code:
+        sql += " AND defect_code = ?"
+        params.append(defect_code)
+    if date_from:
+        sql += " AND %s >= ?" % col
+        params.append(str(date_from)[:10])
+    if date_to:
+        sql += " AND %s <= ?" % col
+        params.append(_end_of_day(date_to))
+    sql += " ORDER BY %s ASC, rowid ASC LIMIT ?" % col
+    params.append(int(limit))
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def _end_of_day(value: Any) -> str:
+    """把 'YYYY-MM-DD' 补成 'YYYY-MM-DD~'。
+
+    用 `~` 而不是 `T23:59:59`：ASCII 里 `~`(0x7E) 大于任何数字与字母，
+    因此任何以该日期开头的字符串都 ≤ 'YYYY-MM-DD~'，包括 "2026-11-30"、
+    "2026-11-30T23:59:59"、"2026-11-30 08:00"。用 T23:59:59 反而会漏掉
+    "2026-11-30T23:59:59.500" 这种带毫秒的写法。
+    """
+    s = str(value)
+    return s if len(s) > 10 else s + "~"
+
+
+def query_work_orders(
+    conn: sqlite3.Connection,
+    *,
+    line_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    col: str = "occurred_at",
+    limit: int = 5000,
+) -> List[Dict[str, Any]]:
+    """取工单（不良率的分母）。"""
+    if col not in ("occurred_at", "recorded_at"):
+        raise ValueError("时间列只能是 occurred_at 或 recorded_at")
+    sql = "SELECT * FROM work_order WHERE 1=1"
+    params: List[Any] = []
+    if line_id:
+        sql += " AND line_id = ?"
+        params.append(line_id)
+    if date_from:
+        sql += " AND %s >= ?" % col
+        params.append(str(date_from)[:10])
+    if date_to:
+        sql += " AND %s <= ?" % col
+        params.append(_end_of_day(date_to))
+    sql += " ORDER BY %s ASC LIMIT ?" % col
+    params.append(int(limit))
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def quality_kpi(
+    conn: sqlite3.Connection,
+    *,
+    line_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    col: str = "occurred_at",
+) -> Dict[str, Any]:
+    """一次 SQL 拿到 KPI 需要的基础计数（避免 5 次全表扫描）。
+
+    `SUM(CASE WHEN ...)` 的写法比多次查询快得多，但要注意 `qty` 可能是 NULL，
+    所以用 `COALESCE(qty, 0)`；`COUNT(*)` 与 `SUM(qty)` 的区别是
+    "几单"与"几件"——报告里这两个数经常被混用，导致"不良率 200%"的笑话。
+    """
+    where = " WHERE 1=1"
+    params: List[Any] = []
+    if line_id:
+        where += " AND line_id = ?"
+        params.append(line_id)
+    if date_from:
+        where += " AND %s >= ?" % col
+        params.append(str(date_from)[:10])
+    if date_to:
+        where += " AND %s <= ?" % col
+        params.append(_end_of_day(date_to))
+
+    row = conn.execute(
+        "SELECT COUNT(*) AS orders,"
+        " COALESCE(SUM(COALESCE(qty,0)),0) AS pieces,"
+        " COALESCE(SUM(CASE WHEN status='draft' THEN 1 ELSE 0 END),0) AS drafts,"
+        " COALESCE(SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),0) AS pendings,"
+        " COALESCE(SUM(COALESCE(is_backfill,0)),0) AS backfills,"
+        " COALESCE(SUM(CASE WHEN severity='严重' THEN 1 ELSE 0 END),0) AS severe,"
+        " COALESCE(SUM(CASE WHEN defect_code IS NULL OR defect_code='' THEN 1 ELSE 0 END),0) AS uncoded"
+        " FROM defect_item" + where,
+        params,
+    ).fetchone()
+
+    prod = conn.execute(
+        "SELECT COALESCE(SUM(COALESCE(planned_qty,0)),0) AS planned FROM work_order" + where,
+        params,
+    ).fetchone()
+
+    kpi = dict(row) if row else {}
+    kpi["planned_qty"] = prod["planned"] if prod else 0
+    return kpi
+
+
+def distinct_lines(conn: sqlite3.Connection) -> List[str]:
+    """所有出现过的产线（看板的产线下拉框用）。"""
+    rows = conn.execute(
+        "SELECT DISTINCT line_id FROM defect_item WHERE line_id IS NOT NULL"
+        " UNION SELECT DISTINCT line_id FROM work_order WHERE line_id IS NOT NULL"
+        " ORDER BY 1"
+    ).fetchall()
+    return [r["line_id"] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# 计量型实测值（阶段 4：SPC 的数据源）
+# ---------------------------------------------------------------------------
+def insert_measurement(
+    conn: sqlite3.Connection,
+    item_code: str,
+    value: float,
+    line_id: str,
+    *,
+    work_order_id: Optional[str] = None,
+    op_code: Optional[str] = None,
+    subgroup_no: int = 1,
+    unit: str = "mm",
+    usl: Optional[float] = None,
+    lsl: Optional[float] = None,
+    gauge: Optional[str] = None,
+    operator: Optional[str] = None,
+    occurred_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """写一条实测值。
+
+    `subgroup_no` 由调用方给定而不是自增：子组是"同一次抽检的 5 件"，
+    这个分组信息只有现场知道（几点几分抽的、哪一模的），系统不能替它猜。
+    如果让它自增，同一小时的两批抽检会被合并成一个 10 件的子组，
+    σ̂ 立刻失真——控制限跟着全错。
+    """
+    record_id = new_id("MR")
+    ts = occurred_at or _now()
+    conn.execute(
+        "INSERT INTO meas_record (record_id, item_code, work_order_id, line_id, op_code,"
+        " subgroup_no, value, unit, usl, lsl, gauge, operator, occurred_at, recorded_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            record_id, item_code, work_order_id, line_id, op_code,
+            int(subgroup_no), float(value), unit, usl, lsl, gauge, operator,
+            ts, _now(),
+        ),
+    )
+    conn.commit()
+    return get_measurement(conn, record_id) or {}
+
+
+def insert_measurements(conn: sqlite3.Connection, rows: Sequence[Dict[str, Any]]) -> int:
+    """批量写入（导入 Excel 时的路径）。返回写入条数。
+
+    不做 `executemany` 之外的花哨优化，但**整体一个事务**：
+    导入 5000 行时逐条 commit 会慢 30 倍以上，而且中途失败会留下半批数据——
+    半批数据比没有数据更危险，因为看板上看不出它是半批。
+    """
+    if not rows:
+        return 0
+    payload = []
+    now = _now()
+    for r in rows:
+        payload.append(
+            (
+                new_id("MR"),
+                r.get("item_code") or "未命名",
+                r.get("work_order_id"),
+                r.get("line_id") or "UNKNOWN",
+                r.get("op_code"),
+                int(r.get("subgroup_no") or 1),
+                float(r.get("value") or 0),
+                r.get("unit") or "mm",
+                r.get("usl"),
+                r.get("lsl"),
+                r.get("gauge"),
+                r.get("operator"),
+                r.get("occurred_at") or now,
+                now,
+            )
+        )
+    conn.executemany(
+        "INSERT INTO meas_record (record_id, item_code, work_order_id, line_id, op_code,"
+        " subgroup_no, value, unit, usl, lsl, gauge, operator, occurred_at, recorded_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        payload,
+    )
+    conn.commit()
+    return len(payload)
+
+
+def get_measurement(conn: sqlite3.Connection, record_id: str) -> Optional[Dict[str, Any]]:
+    row = conn.execute("SELECT * FROM meas_record WHERE record_id=?", (record_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def query_measurements(
+    conn: sqlite3.Connection,
+    *,
+    item_code: Optional[str] = None,
+    line_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 50000,
+) -> List[Dict[str, Any]]:
+    """按项目/产线/时间取实测值，按子组顺序返回。
+
+    排序用 `subgroup_no` 而不是时间：同一次抽检的 5 件可能跨秒写入，
+    按时间排会把子组打散；子组顺序错了，X̄-R 图上的点就全乱了。
+    """
+    sql = "SELECT * FROM meas_record WHERE 1=1"
+    params: List[Any] = []
+    if item_code:
+        sql += " AND item_code = ?"
+        params.append(item_code)
+    if line_id:
+        sql += " AND line_id = ?"
+        params.append(line_id)
+    if date_from:
+        sql += " AND occurred_at >= ?"
+        params.append(str(date_from)[:10])
+    if date_to:
+        sql += " AND occurred_at <= ?"
+        params.append(_end_of_day(date_to))
+    sql += " ORDER BY occurred_at ASC, subgroup_no ASC, rowid ASC LIMIT ?"
+    params.append(int(limit))
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def list_measurement_items(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """有哪些检验项目、各多少条、规格限是什么（看板的下拉框与默认规格）。"""
+    rows = conn.execute(
+        "SELECT item_code, line_id, unit, COUNT(*) AS n,"
+        " AVG(value) AS mean_value, MIN(value) AS min_value, MAX(value) AS max_value,"
+        " MAX(usl) AS usl, MIN(lsl) AS lsl"
+        " FROM meas_record GROUP BY item_code, line_id, unit"
+        " ORDER BY item_code, line_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_measurements(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS n FROM meas_record").fetchone()
+    return int(row["n"]) if row else 0
