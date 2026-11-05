@@ -188,3 +188,58 @@ class TestRescan:
         assert row["reviewed_by"] == "manager-01"
         assert row["reviewed_note"] == "已要求工程师补充验证"
         assert row["flag_root_cause"] == 1
+
+
+class TestAuditList:
+    """审计列表的四种筛选维度——管理页筛选条直接依赖这些语义。"""
+
+    def _seed(self, conn):
+        """两个角色、两个批次、三条消息。"""
+        qe = repo.create_session(conn, "qe-001", "quality_engineer")
+        conn.execute("UPDATE chat_session SET batch_no='B20261030-01'"
+                     " WHERE session_id=?", (qe["session_id"],))
+        sl = repo.create_session(conn, "sl-001", "shift_leader")
+        conn.execute("UPDATE chat_session SET batch_no='B20261030-02'"
+                     " WHERE session_id=?", (sl["session_id"],))
+        conn.commit()
+
+        bad = _assistant(conn, "根因已确定。", session=qe)
+        audit.flag_message(conn, bad)
+        _assistant(conn, "按〔C1〕执行。", session=qe)
+        _assistant(conn, "现场按作业指导书执行。", session=sl)
+        return qe, sl, bad
+
+    def test_filter_by_role(self, conn):
+        self._seed(conn)
+        rows = repo.list_audit_messages(conn, role="shift_leader")
+        assert len(rows) == 1 and rows[0]["session_role"] == "shift_leader"
+
+    def test_filter_by_batch(self, conn):
+        self._seed(conn)
+        rows = repo.list_audit_messages(conn, batch_no="B20261030-01")
+        assert len(rows) == 2 and all(r["batch_no"] == "B20261030-01" for r in rows)
+
+    def test_only_flagged(self, conn):
+        self._seed(conn)
+        rows = repo.list_audit_messages(conn, only_flagged=True)
+        assert len(rows) == 1 and rows[0]["flag_root_cause"] == 1
+
+    def test_only_assistant(self, conn):
+        """列表只列回答，不列提问——否则筛选结果一半是噪声。"""
+        qe, _, _ = self._seed(conn)
+        repo.save_message(conn, qe["session_id"], "user", "根因已确定了吗？")
+        rows = repo.list_audit_messages(conn)
+        assert all(r["role"] == "assistant" for r in rows)
+
+    def test_date_range(self, conn):
+        """日期筛选按 occurred_at（业务时间）截断到日终。"""
+        self._seed(conn)
+        today = repo.list_audit_messages(conn, date_from="2000-01-01",
+                                         date_to="2999-12-31")
+        assert len(today) == 3
+        none = repo.list_audit_messages(conn, date_from="2999-12-31")
+        assert none == []
+
+    def test_mark_reviewed_missing(self, conn):
+        """核查不存在的消息返回 False，路由层据此回 40404/40001。"""
+        assert repo.mark_reviewed(conn, "msg-nope", "manager-01", "") is False
