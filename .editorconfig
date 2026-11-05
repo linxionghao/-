@@ -1,0 +1,36 @@
+# 统一不同编辑器 / 操作系统下的基础排版，避免 diff 里混入空白噪声。
+# EditorConfig 官方说明：https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Python：本仓库统一 4 空格，行宽 100（见 pyproject.toml [tool.ruff]）
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+# 前端与模板：2 空格缩进
+[*.{html,css,js,json,yml,yaml}]
+indent_size = 2
+
+# Markdown：保留行尾空格（两个空格 = 硬换行），不做自动裁剪
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# 数据与索引文件不参与格式约束（多为机器生成）
+[*.{csv,txt,log}]
+insert_final_newline = false
+
+# Windows 批处理必须 CRLF，否则 cmd 解析异常
+[*.{bat,cmd}]
+end_of_line = crlf
+
+[*.ps1]
+end_of_line = crlf
