@@ -1,0 +1,74 @@
+name: ci
+
+# 触发条件：主分支推送 + 所有 PR。
+# 目标不是「跑通部署」，而是保证三件事不被悄悄破坏：
+#   1) 代码能编译（语法/未定义名）—— E9/F63/F7/F82
+#   2) 183 项单测在 Linux + Python 3.9/3.11 上仍然通过（Windows 不是唯一真相）
+#   3) 核心模块不依赖可选依赖（faiss / jieba）也能降级运行
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 是 pyproject 声明的最低版本；3.11 是日常开发版本
+        python-version: ["3.9", "3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          # 只装 requirements 里的「必需依赖」，故意不装 faiss-cpu / jieba，
+          # 以此验证降级路径（numpy 余弦 + 汉字二元组）在干净环境同样可用。
+          pip install -r requirements-dev.txt
+
+      - name: Syntax gate (ruff E9,F63,F7,F82)
+        run: |
+          python -m ruff check src tests examples scripts \
+            --select E9,F63,F7,F82 --output-format concise
+
+      - name: Compile all
+        run: python -m compileall -q src examples scripts
+
+      - name: Pytest
+        run: python -m pytest -q --maxfail=1
+
+      - name: Smoke scripts (shell syntax only)
+        run: |
+          for f in scripts/*.sh; do bash -n "$f"; done
+
+  lint:
+    name: ruff (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      # 全量风格检查只作提示，不阻断合并（历史代码未做 100% 收敛）
+      - run: python -m ruff check src tests --statistics || true
