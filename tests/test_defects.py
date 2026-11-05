@@ -212,3 +212,147 @@ class TestCreateDraft:
         view = _create(env, user=QE, work_order_id="WO-B")
         row = repo.get_defect(env["conn"], view["defect_no"])
         assert row["line_id"] == "line-02"
+
+
+# ---------------------------------------------------------------------------
+# 人工确认：draft → pending
+# ---------------------------------------------------------------------------
+class TestConfirm:
+    def test_confirm_moves_to_pending(self, env):
+        view = _create(env)
+        result = defect_service.confirm(
+            env["conn"], user=LEADER, defect_no=view["defect_no"],
+            defect_code="D-THREAD")
+        assert result["status"] == "pending"
+        assert result["defect_code"] == "D-THREAD"
+        assert "判定" in result["status_text"]      # 只承诺待判定，不出现结论
+        assert "合格" not in result["status_text"]
+
+    def test_confirm_twice_rejected(self, env):
+        """已确认的单不可改码——避免同一单出现两个分类。"""
+        view = _create(env)
+        defect_service.confirm(env["conn"], user=LEADER,
+                               defect_no=view["defect_no"], defect_code="D-THREAD")
+        with pytest.raises(ApiError) as ei:
+            defect_service.confirm(env["conn"], user=LEADER,
+                                   defect_no=view["defect_no"], defect_code="D-SURF")
+        assert ei.value.code == ErrorCode.DEFECT_STATE_INVALID
+
+    def test_unknown_code_rejected(self, env):
+        view = _create(env)
+        with pytest.raises(ApiError) as ei:
+            defect_service.confirm(env["conn"], user=LEADER,
+                                   defect_no=view["defect_no"], defect_code="D-NOPE")
+        assert ei.value.code == ErrorCode.BAD_REQUEST
+
+    def test_disabled_code_rejected(self, env):
+        """停用的缺陷码不允许再被确认（字典可运营下架）。"""
+        env["conn"].execute("UPDATE defect_code SET status='disabled' WHERE code='D-SURF'")
+        env["conn"].commit()
+        view = _create(env)
+        with pytest.raises(ApiError) as ei:
+            defect_service.confirm(env["conn"], user=LEADER,
+                                   defect_no=view["defect_no"], defect_code="D-SURF")
+        assert ei.value.code == ErrorCode.BAD_REQUEST
+
+    def test_empty_code_rejected(self, env):
+        view = _create(env)
+        with pytest.raises(ApiError) as ei:
+            defect_service.confirm(env["conn"], user=LEADER,
+                                   defect_no=view["defect_no"], defect_code="  ")
+        assert ei.value.code == ErrorCode.BAD_REQUEST
+
+    def test_other_line_cannot_confirm(self, env):
+        """他线班组长确认本线单据 → 40404（不暴露单据存在性）。"""
+        view = _create(env)
+        with pytest.raises(ApiError) as ei:
+            defect_service.confirm(env["conn"], user=COLLEAGUE,
+                                   defect_no=view["defect_no"], defect_code="D-THREAD")
+        assert ei.value.code == ErrorCode.DEFECT_NOT_FOUND
+
+
+# ---------------------------------------------------------------------------
+# 可见性裁剪：班组长看不到归因与判定字段
+# ---------------------------------------------------------------------------
+class TestVisibility:
+    def test_sl_fields_whitelisted(self, env):
+        view = _create(env)
+        assert "suggest_json" not in view
+        assert "photo_path" not in view
+        assert "line_id" not in view
+        assert "created_by" not in view
+
+    def test_qe_sees_more(self, env):
+        view = _create(env, user=QE)
+        assert "suggest_json" in view and "line_id" in view
+
+    def test_list_filtered_by_line(self, env):
+        """班组长列表只出现本线单；QE 能看到全部。"""
+        _create(env)                                   # line-01
+        _create(env, user=QE, work_order_id="WO-B")    # line-02
+        sl_rows = defect_service.list_for_user(env["conn"], LEADER)
+        qe_rows = defect_service.list_for_user(env["conn"], QE)
+        assert len(sl_rows) == 1
+        assert len(qe_rows) == 2
+
+    def test_get_other_line_404(self, env):
+        other = _create(env, user=QE, work_order_id="WO-B")
+        with pytest.raises(ApiError) as ei:
+            defect_service.get_for_user(env["conn"], LEADER, other["defect_no"])
+        assert ei.value.code == ErrorCode.DEFECT_NOT_FOUND
+
+    def test_status_text_has_no_judgement(self, env):
+        """状态文案不得出现任何合格性判定语汇（需求红线）。"""
+        view = _create(env)
+        for word in ("合格", "不合格", "判退", "报废"):
+            assert word not in view["status_text"]
+
+
+# ---------------------------------------------------------------------------
+# 照片：校验 + 落盘 + token 通道
+# ---------------------------------------------------------------------------
+class TestPhoto:
+    def _data_url(self, blob=JPEG_BYTES):
+        return "data:image/jpeg;base64," + base64.b64encode(blob).decode()
+
+    def test_inline_photo_saved(self, env):
+        view = _create(env, photo=self._data_url())
+        row = repo.get_defect(env["conn"], view["defect_no"])
+        assert row["photo_path"].endswith(".jpg")
+        assert (env["tmp"] / "uploads").exists()
+
+    def test_invalid_bytes_rejected(self, env):
+        """GIF 头不是允许格式 → 40003，且不留下单据。"""
+        with pytest.raises(ApiError) as ei:
+            _create(env, photo="data:image/png;base64," +
+                    base64.b64encode(b"GIF89a" + b"0" * 20).decode())
+        assert ei.value.code == ErrorCode.PHOTO_INVALID
+        assert repo.count_defects(env["conn"]) == 0
+
+    def test_oversize_rejected(self, env):
+        too_big = JPEG_BYTES + b"\x00" * (2 * 1024 * 1024 + 1)
+        with pytest.raises(ApiError) as ei:
+            _create(env, photo=self._data_url(too_big))
+        assert ei.value.code == ErrorCode.PHOTO_INVALID
+
+    def test_empty_photo_is_optional(self, env):
+        view = _create(env, photo="")
+        assert view["has_photo"] is False
+
+    def test_token_flow(self, env):
+        """预上传拿 token → 建单引用 → 临时文件移动到正式目录。"""
+        token = photo_service.save_temp(JPEG_BYTES, "jpg", env["upload"])
+        view = _create(env, photo_token=token)
+        row = repo.get_defect(env["conn"], view["defect_no"])
+        assert row["photo_path"].endswith(f"{view['defect_no']}.jpg")
+        assert photo_service.resolve_temp(token, env["upload"]) is None
+
+    def test_bad_token_rejected(self, env):
+        for token in ("../../etc/passwd", "not-a-token", "0" * 32):
+            with pytest.raises(ApiError) as ei:
+                _create(env, photo_token=token)
+            assert ei.value.code == ErrorCode.PHOTO_INVALID
+
+    def test_path_traversal_token_ignored(self, env):
+        """token 严格 hex 校验：路径穿越字符串解析为空，不产生文件。"""
+        assert photo_service.resolve_temp("../../secret", env["upload"]) is None
