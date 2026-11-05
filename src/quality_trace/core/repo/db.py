@@ -260,6 +260,31 @@ CREATE TABLE IF NOT EXISTS lot_consumption (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lot_consume
     ON lot_consumption(lot_id, work_order_id);         -- 同一批料在同一工单只记一次
 CREATE INDEX IF NOT EXISTS idx_consume_wo ON lot_consumption(work_order_id);
+
+-- ---- 阶段 6：MSA 测量系统分析记录 ----
+-- 为什么要落库、而不是每次现算：
+--   MSA 的结论是**有时点的证据**。PPAP 文件里写着"2026-11-06 %GRR=8.7% 合格"，
+--   半年后有人重跑一遍、发现数据变了，如果没有快照就没法解释当时为什么签字。
+--   result_json 存的是计算结果的完整快照，raw_json 存原始读数——
+--   前者用于复核结论，后者用于换算法重算，两者都不能只留一个。
+CREATE TABLE IF NOT EXISTS msa_study (
+    study_id      TEXT PRIMARY KEY,
+    item_code     TEXT NOT NULL,                    -- 检验项目
+    gauge         TEXT,                             -- 量具编号
+    line_id       TEXT,
+    tolerance     REAL,                             -- 公差带宽（USL-LSL），可空
+    design_json   TEXT NOT NULL DEFAULT '{}',       -- 评价人数/零件数/试测次数
+    raw_json      TEXT NOT NULL DEFAULT '[]',       -- 原始读数（可重算）
+    result_json   TEXT NOT NULL DEFAULT '{}',       -- 计算结论快照（复核用）
+    verdict       TEXT NOT NULL DEFAULT 'unknown',  -- accept / conditional / reject
+    pct_grr       REAL,
+    ndc           REAL,
+    source        TEXT NOT NULL DEFAULT 'manual',   -- manual / measurements
+    created_by    TEXT,
+    occurred_at   TEXT NOT NULL,                    -- 研究时刻（业务时间）
+    recorded_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_msa_item ON msa_study(item_code, occurred_at);
 """
 
 # ---- 增列迁移（SQLite 无 ADD COLUMN IF NOT EXISTS，逐条 try）----
@@ -1628,3 +1653,90 @@ def suppliers_of_defect(conn: sqlite3.Connection, defect_no: str) -> List[str]:
         (defect_no,),
     ).fetchall()
     return [r["supplier"] for r in rows]
+
+
+# ================================================================= MSA 研究
+def insert_msa_study(
+    conn: sqlite3.Connection, study_id: str, item_code: str,
+    design_json: str, raw_json: str, result_json: str,
+    *, gauge: Optional[str] = None, line_id: Optional[str] = None,
+    tolerance: Optional[float] = None, verdict: str = "unknown",
+    pct_grr: Optional[float] = None, ndc: Optional[float] = None,
+    source: str = "manual", created_by: str = "",
+    occurred_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """写入一次 MSA 研究（幂等：同 study_id 覆盖更新）。"""
+    now = _now()
+    conn.execute(
+        "INSERT INTO msa_study (study_id, item_code, gauge, line_id, tolerance,"
+        " design_json, raw_json, result_json, verdict, pct_grr, ndc, source,"
+        " created_by, occurred_at, recorded_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        " ON CONFLICT(study_id) DO UPDATE SET result_json=excluded.result_json,"
+        " verdict=excluded.verdict, pct_grr=excluded.pct_grr, ndc=excluded.ndc",
+        (study_id, item_code, gauge, line_id, tolerance, design_json, raw_json,
+         result_json, verdict, pct_grr, ndc, source, created_by,
+         occurred_at or now, now),
+    )
+    conn.commit()
+    return get_msa_study(conn, study_id) or {}
+
+
+def get_msa_study(conn: sqlite3.Connection, study_id: str) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        "SELECT * FROM msa_study WHERE study_id = ?", (study_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_msa_studies(
+    conn: sqlite3.Connection, *, item_code: Optional[str] = None,
+    verdict: Optional[str] = None, limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """研究记录列表（不含 raw_json，列表页不需要几万行读数）。"""
+    sql = ("SELECT study_id, item_code, gauge, line_id, tolerance, verdict,"
+           " pct_grr, ndc, source, created_by, occurred_at, design_json"
+           " FROM msa_study WHERE 1=1")
+    args: List[Any] = []
+    if item_code:
+        sql += " AND item_code = ?"
+        args.append(item_code)
+    if verdict:
+        sql += " AND verdict = ?"
+        args.append(verdict)
+    sql += " ORDER BY occurred_at DESC, rowid DESC LIMIT ?"
+    args.append(int(limit))
+    return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+
+def latest_msa_of_item(conn: sqlite3.Connection, item_code: str) -> Optional[Dict[str, Any]]:
+    """某检验项目最近一次 MSA（看板与"缺 MSA"清单的判断依据）。"""
+    row = conn.execute(
+        "SELECT * FROM msa_study WHERE item_code = ?"
+        " ORDER BY occurred_at DESC, rowid DESC LIMIT 1",
+        (item_code,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def count_msa_studies(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS n FROM msa_study").fetchone()
+    return int(row["n"]) if row else 0
+
+
+def items_without_msa(conn: sqlite3.Connection, limit: int = 50) -> List[Dict[str, Any]]:
+    """有实测值但从未做过 MSA 的检验项目。
+
+    这是本项目里最值得被看见的一张表：它把"我们一直在画控制图，
+    但从没验证过尺子"这件事变成了一个可以点开的名字。
+    """
+    rows = conn.execute(
+        "SELECT m.item_code, m.line_id, COUNT(*) AS records,"
+        "       MIN(m.occurred_at) AS first_at, MAX(m.occurred_at) AS last_at"
+        " FROM meas_record m"
+        " WHERE NOT EXISTS (SELECT 1 FROM msa_study s WHERE s.item_code = m.item_code)"
+        " GROUP BY m.item_code, m.line_id"
+        " ORDER BY records DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    return [dict(r) for r in rows]

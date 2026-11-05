@@ -35,6 +35,7 @@ class ErrorCode:
     ATTR_NOT_FOUND = 40405     # 归因单不存在
     WORK_ORDER_NOT_FOUND = 40406  # 工单不存在或不属于当前产线
     LOT_NOT_FOUND = 40407      # 物料批不存在（追溯正查）
+    MSA_NOT_FOUND = 40408      # MSA 研究记录不存在
 
     SESSION_ARCHIVED = 40901   # 会话已归档
     STREAM_BUSY = 40902        # 上一条仍在生成
@@ -76,6 +77,7 @@ MESSAGES: Dict[int, str] = {
     ErrorCode.ATTR_NOT_FOUND: "归因单不存在",
     ErrorCode.WORK_ORDER_NOT_FOUND: "工单不存在或不属于当前产线",
     ErrorCode.LOT_NOT_FOUND: "物料批不存在",
+    ErrorCode.MSA_NOT_FOUND: "MSA 研究记录不存在",
     ErrorCode.SESSION_ARCHIVED: "会话已归档，无法继续提问",
     ErrorCode.STREAM_BUSY: "上一条回答仍在生成中，请稍候",
     ErrorCode.DOC_VERSION_EXISTS: "该文档的此版本号已存在",
