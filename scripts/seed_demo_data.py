@@ -306,11 +306,13 @@ def seed_measurements(conn, days: int = 14) -> None:
 
 
 def seed_defect_records(conn, days: int = 14) -> None:
-    """造跨日的缺陷单，让趋势/帕累托/星期效应有形状。"""
-    existing = conn.execute("SELECT COUNT(*) AS n FROM defect_item").fetchone()
-    if existing and existing["n"] > 0:
-        print("[缺陷单] 已存在，跳过")
-        return
+    """造跨日的缺陷单，让趋势/帕累托/星期效应有形状。
+
+    幂等靠**固定编号**（DF-DEMO-0001…），不靠"表里有数据就跳过"。
+    最早写成"有数据就跳过"，结果演示库里有 14 条当天录入的真实单，
+    整个趋势图只有一根柱子，看板上写着"数据点不足 2 个"——幂等是对的，
+    但把演示效果杀死了。判据应该是"我要的那批数据在不在"，不是"表空不空"。
+    """
 
     rnd = _random.Random(20261107)
     today = _dt.date.today()
@@ -322,6 +324,13 @@ def seed_defect_records(conn, days: int = 14) -> None:
     n = 0
     for d in range(days - 1, -1, -1):
         day = (today - _dt.timedelta(days=d)).isoformat()
+        # 每天一张工单：不良率的分母必须"每天都有"。
+        # 只灌一张总工单的话，rate_series 只有一天有分母，趋势图上会出现
+        # 一个孤零零的点，其余全是 None——这正是第一版踩的坑。
+        repo.insert_work_order(
+            conn, f"WO-DEMO-{days - d:02d}", "六角螺栓 M10x40", "line-01",
+            rnd.choice([800, 1000, 1200, 1500]), occurred_at=day,
+        )
         for i in range(rnd.randint(2, 6)):
             r = rnd.random()
             acc = 0.0

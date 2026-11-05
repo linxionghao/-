@@ -207,7 +207,10 @@ function lineChart(host, points, opts) {
 
   const vals = points.map(p => p.y).filter(v => v !== null && v !== undefined);
   if (!vals.length) { text(svg, 20, h / 2, '暂无数据'); return; }
-  const max = Math.max.apply(null, vals), min = Math.min.apply(null, vals);
+  let max = Math.max.apply(null, vals), min = Math.min.apply(null, vals);
+  // 全部相等（或只有一个点）时给一点上下余量，否则线会贴在底边、
+  // 两个 y 轴标签叠在一起，看起来像"图坏了"
+  if (max === min) { const pad0 = Math.abs(max) * 0.1 || 1; max += pad0; min -= pad0; }
   const span = (max - min) || 1;
   const yOf = (v) => box.y + box.h - (v - min) / span * box.h;
   const xOf = (i) => box.x + (points.length === 1 ? box.w / 2 : box.w * i / (points.length - 1));
