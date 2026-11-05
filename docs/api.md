@@ -185,3 +185,71 @@ def run(config: Dict[str, Any], verbose: bool = False) -> Dict[str, Any]
 
 ---
 
+## 6. 认证接口
+
+### 6.1 登录
+
+```
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{"username": "qe001", "password": "qe001"}
+```
+
+成功：
+
+```json
+{
+  "code": 0,
+  "message": "成功",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIs...",
+    "expires_in": 43200,
+    "user": {
+      "user_id": "u-xxx",
+      "username": "qe001",
+      "display_name": "顾工（质量工程师）",
+      "role": "quality_engineer",
+      "line_id": null
+    }
+  }
+}
+```
+
+失败（HTTP 401）：
+
+```json
+{"code": 40102, "message": "登录名或密码错误", "data": null}
+```
+
+**安全约定**：账号不存在与密码错误返回同一错误码，不泄露账号是否存在；
+密码用 PBKDF2 哈希存储；令牌签名采用常数时间比较。
+
+### 6.2 当前用户
+
+```
+GET /api/v1/auth/me
+Authorization: Bearer <token>
+```
+
+用于前端启动时校验令牌是否仍有效。过期 → 40103，畸形/伪造 → 40101。
+
+### 6.3 后台表单登录（Cookie）
+
+```
+POST /admin/login
+Content-Type: application/x-www-form-urlencoded
+
+username=manager01&password=manager01
+```
+
+- 成功：`303` 跳转 `/admin/`，写入 HttpOnly Cookie；
+- 失败：返回登录页并显示中文错误（HTTP 401）；
+- 非主管角色登录后台：`403` + 提示页「仅限质量主管」。
+
+```
+POST /admin/logout       # 清除 Cookie 并跳转登录页
+```
+
+---
+
