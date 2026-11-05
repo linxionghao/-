@@ -456,3 +456,154 @@ GET  /api/v1/admin/attributions/{attribution_id}/export-8d
 
 ---
 
+## 9. 现场录入接口（SL）
+
+### 9.1 缺陷码字典
+
+```
+GET /api/v1/defect-codes
+```
+
+```json
+{"code": 0, "data": {
+  "groups": [
+    {"category": "尺寸缺陷", "items": [{"code": "D-THREAD", "name": "螺纹外径超差"}]},
+    {"category": "外观缺陷", "items": [{"code": "D-SURF", "name": "表面划伤"}]}
+  ],
+  "total": 7
+}}
+```
+
+### 9.2 建草稿（第一步）
+
+```
+POST /api/v1/defects
+Authorization: Bearer <SL token>
+
+{
+  "work_order_id": "WO-20261030-001",
+  "op_code": "OP30",
+  "description": "螺纹外径偏小，通规止端过不去",
+  "qty": 3,
+  "severity": "严重",              // 轻微 / 一般 / 严重
+  "occurred_at": "2026-11-05T14:30:00",   // 现场发生时刻，可空
+  "photo": "data:image/jpeg;base64,...",  // 可空，与 photo_token 二选一
+  "photo_token": "040ba9fe...",           // 可空，预上传返回
+  "client_draft_id": "dr-...",            // 可空，离线补传幂等键
+  "is_backfill": false                    // 客户端显式声明补录
+}
+```
+
+成功（`status` 恒为 `draft`，`defect_code` 为空）：
+
+```json
+{
+  "code": 0,
+  "message": "已创建草稿，请确认缺陷码",
+  "data": {
+    "defect_no": "DF-20261105-0001",
+    "status": "draft",
+    "status_text": "待确认缺陷码",
+    "defect_code": null,
+    "is_backfill": false,
+    "occurred_at": "2026-11-05T14:30:00",
+    "recorded_at": "2026-11-05T14:30:02",
+    "has_photo": true,
+    "suggested": [
+      {"code": "D-THREAD", "name": "螺纹外径超差", "category": "尺寸缺陷",
+       "confidence": 0.95, "source": "keyword", "matched": ["外径", "偏小"]}
+    ],
+    "normalize": {"source": "keyword", "degraded": false,
+                  "degraded_reason": "未配置大模型，使用关键词匹配"},
+    "existing": false
+  }
+}
+```
+
+**幂等**：同一 `client_draft_id` 再次提交返回原单，`existing=true`，不产生第二条。
+
+### 9.3 确认缺陷码（第二步）
+
+```
+POST /api/v1/defects/{defect_no}/confirm
+
+{"defect_code": "D-THREAD"}
+```
+
+成功后 `status=pending`，`status_text="已提交，待质量工程师判定"`。
+**重复确认 → 40905**；未知/停用码 → 40001；他线单据 → 40404。
+
+### 9.4 列表与详情
+
+```
+GET /api/v1/defects                 # 班组长强制本线
+GET /api/v1/defects/{defect_no}     # 他线 40404
+GET /api/v1/work-orders/{id}        # 工单校验（失焦调用）
+```
+
+班组长响应字段白名单：`defect_no, work_order_id, op_code, description, qty,
+severity, defect_code, status, status_text, is_backfill, occurred_at, recorded_at, has_photo`。
+`suggest_json / photo_path / line_id / created_by` 等字段**服务端不返回**。
+
+### 9.5 照片预上传
+
+```
+POST /api/v1/uploads/photo
+
+{"photo": "data:image/jpeg;base64,..."}
+```
+
+```json
+{"code": 0, "data": {"photo_token": "040ba9fe3683498888c9d301444e95b6",
+                     "bytes": 10240, "ext": "jpg"}}
+```
+
+token 为 32 位 hex，存于 `data/uploads/tmp/`；建单时用 `photo_token` 引用，
+服务端移动到正式目录（`data/uploads/photos/`）。非 JPEG/PNG 或超 2MB → 40003。
+
+---
+
+## 10. 调用示例
+
+### 10.1 问答（curl）
+
+```bash
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"qe001","password":"qe001"}' | jq -r .data.token)
+
+curl -N -X POST http://127.0.0.1:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"question":"螺纹检验的抽样方案是什么？","as_of":"2026-06-01"}'
+```
+
+### 10.2 上传文档（curl）
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/admin/documents \
+  -H "Authorization: Bearer $QM_TOKEN" \
+  -F "file=@检验规范v3.md" -F "doc_type=standard" \
+  -F "version=v3" -F "effective_from=2026-01-01" -F "effective_to=2027-12-31"
+```
+
+### 10.3 建单 + 确认（curl）
+
+```bash
+DNO=$(curl -s -X POST http://127.0.0.1:8000/api/v1/defects \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $SL_TOKEN" \
+  -d '{"work_order_id":"WO-20261030-001","description":"螺纹外径偏小，通规过不去"}' \
+  | jq -r .data.defect_no)
+
+curl -X POST http://127.0.0.1:8000/api/v1/defects/$DNO/confirm \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $SL_TOKEN" \
+  -d '{"defect_code":"D-THREAD"}'
+```
+
+### 10.4 一键冒烟
+
+```bash
+bash scripts/smoke_stage3.sh 8000     # 审计/审批 18 项断言
+bash scripts/smoke_defects.sh 8000    # 录入端 18 项断言
+```
+
