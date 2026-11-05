@@ -32,7 +32,7 @@ DEMO_USERS = [
 ]
 
 # ---- 简化工单 / 缺陷码字典 ----
-# 本批次（1a）先定义好清单：work_order / defect_code 两表随批次 1b/2 建表后在此灌入。
+# 批次 2 起由 seed_defects() 灌入：工单供班组长建单校验，字典供归一化匹配。
 DEMO_WORK_ORDERS = [
     # work_order_id, 产品, 产线, 计划数量
     ("WO-20261030-001", "六角螺栓 M10x40", "line-01", 5000),
@@ -210,6 +210,20 @@ def seed_audit_demo(conn) -> None:
     print("[归因单] attr-20261030-0001（无 8D 缓存）/ attr-20261030-0002（含 8D 缓存）均已就绪")
 
 
+def seed_defects(conn) -> None:
+    """灌入工单与缺陷码字典（幂等：主键冲突即更新描述字段）。
+
+    班组长端一打开就需要字典渲染分组按钮；工单决定建单时能否通过产线校验。
+    """
+    for work_order_id, product, line_id, planned in DEMO_WORK_ORDERS:
+        repo.insert_work_order(conn, work_order_id, product, line_id, planned)
+    print(f"[工单] {len(DEMO_WORK_ORDERS)} 张（line-01/line-02 各一张）")
+
+    for code, name, category, keywords, _severity, sort_no in DEMO_DEFECT_CODES:
+        repo.upsert_defect_code(conn, code, name, category, keywords, sort_no)
+    print(f"[缺陷码] {len(DEMO_DEFECT_CODES)} 个（分组+关键词已就绪）")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="灌入三角色演示账号等种子数据")
     parser.add_argument("--db", default="data/trace.db", help="SQLite 库路径")
@@ -234,6 +248,7 @@ def main() -> None:
         seed_kb(conn)
     if args.audit:
         seed_audit_demo(conn)
+    seed_defects(conn)          # 字典与工单是两条前端的地基，始终灌入（幂等）
 
     print("种子数据完成。演示账号：qe001 / leader01 / manager01（密码同登录名）")
     conn.close()
