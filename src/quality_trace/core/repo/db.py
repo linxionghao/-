@@ -185,6 +185,16 @@ CREATE TABLE IF NOT EXISTS attribution_order (
 );
 CREATE INDEX IF NOT EXISTS idx_attr_status
     ON attribution_order(status, submitted_at);
+
+-- ---- 批次 2：缺陷码字典（描述归一化的候选来源，运营可在后台维护）----
+CREATE TABLE IF NOT EXISTS defect_code (
+    code          TEXT PRIMARY KEY,                    -- 缺陷码，如 DC-012
+    name          TEXT NOT NULL,                       -- 中文名，如「螺纹外径偏小」
+    category      TEXT NOT NULL DEFAULT '尺寸',        -- 分组：尺寸/外观/装配/材料/其他
+    keywords_json TEXT NOT NULL DEFAULT '[]',          -- 关键词回退匹配用（无 LLM 时的兜底）
+    status        TEXT NOT NULL DEFAULT 'active',      -- active / disabled
+    sort_no       INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # ---- 增列迁移（SQLite 无 ADD COLUMN IF NOT EXISTS，逐条 try）----
