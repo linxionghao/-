@@ -111,3 +111,104 @@ class TestLLMNormalize:
     def test_normalize_empty_dictionary(self):
         out = normalize_service.normalize("螺纹外径偏小", [], None, "")
         assert out["suggested"] == [] and out["degraded"] is False
+
+
+# ---------------------------------------------------------------------------
+# 建单测试夹具
+# ---------------------------------------------------------------------------
+LEADER = {"user_id": "sl-001", "role": "shift_leader", "line_id": "line-01"}
+COLLEAGUE = {"user_id": "sl-002", "role": "shift_leader", "line_id": "line-02"}
+QE = {"user_id": "qe-001", "role": "quality_engineer", "line_id": None}
+
+
+@pytest.fixture()
+def env(tmp_path):
+    """临时库 + 两个产线的工单 + 字典 + 上传目录。"""
+    conn = repo.connect(str(tmp_path / "defects.db"))
+    repo.init_schema(conn)
+    repo.insert_work_order(conn, "WO-A", "M8 螺栓", "line-01", 1000)
+    repo.insert_work_order(conn, "WO-B", "M10 螺栓", "line-02", 1000)
+    for item in CODES:
+        repo.upsert_defect_code(
+            conn, item["code"], item["name"], item["category"],
+            json.loads(item["keywords_json"]),
+        )
+    return {
+        "conn": conn,
+        "upload": tmp_path / "uploads",
+        "tmp": tmp_path,
+    }
+
+
+def _create(env, **kw):
+    params = dict(
+        user=LEADER, work_order_id="WO-A",
+        description="螺纹外径偏小，通规过不去",
+        op_code="OP30", qty=3, severity="严重",
+        llm_cfg=None, api_key="", upload_dir=str(env["upload"]),
+    )
+    params.update(kw)
+    return defect_service.create_draft(env["conn"], **params)
+
+
+class TestCreateDraft:
+    def test_basic_flow(self, env):
+        """建单返回 draft + 候选码，且缺陷码此时为空（人工确认前不落分类）。"""
+        view = _create(env)
+        assert view["status"] == "draft"
+        assert view["defect_code"] is None
+        assert view["suggested"][0]["code"] == "D-THREAD"
+        assert view["is_backfill"] is False
+
+    def test_dual_timestamps(self, env):
+        """occurred_at 用客户端时刻，recorded_at 用服务端落库时刻，两者分离。"""
+        view = _create(env, occurred_at="2026-11-05T08:00:00")
+        assert view["occurred_at"].startswith("2026-11-05T08:00:00")
+        assert view["recorded_at"] != view["occurred_at"]
+
+    def test_backfill_auto_detected(self, env):
+        """发生时刻比录入早 10 分钟 → 自动打补录标。"""
+        view = _create(env, occurred_at="2026-11-05T06:00:00")
+        assert view["is_backfill"] is True
+
+    def test_backfill_declared(self, env):
+        """客户端显式声明补录（离线暂存场景）也打标。"""
+        assert _create(env, declared_backfill=True)["is_backfill"] is True
+
+    def test_idempotent_by_client_draft_id(self, env):
+        """同一 client_draft_id 重复提交返回原单，绝不落两条。"""
+        first = _create(env, client_draft_id="dr-abc")
+        again = _create(env, client_draft_id="dr-abc")
+        assert again["defect_no"] == first["defect_no"]
+        assert again["existing"] is True
+        assert repo.count_defects(env["conn"]) == 1
+
+    def test_invalid_inputs(self, env):
+        cases = [
+            {"work_order_id": "  "},
+            {"description": "短"},
+            {"qty": 0},
+            {"qty": "abc"},
+            {"severity": "致命"},
+        ]
+        for case in cases:
+            with pytest.raises(ApiError) as ei:
+                _create(env, **case)
+            assert ei.value.code == ErrorCode.BAD_REQUEST
+
+    def test_work_order_must_belong_to_line(self, env):
+        """班组长录他线工单 → 40406（不暴露该工单是否存在）。"""
+        with pytest.raises(ApiError) as ei:
+            _create(env, work_order_id="WO-B")
+        assert ei.value.code == ErrorCode.WORK_ORDER_NOT_FOUND
+
+    def test_missing_work_order(self, env):
+        with pytest.raises(ApiError) as ei:
+            _create(env, work_order_id="WO-NOPE")
+        assert ei.value.code == ErrorCode.WORK_ORDER_NOT_FOUND
+
+    def test_qe_uses_work_order_line(self, env):
+        """质量工程师无产线绑定，按工单所属产线落库（代录场景）。"""
+        view = _create(env, user=QE, work_order_id="WO-B")
+        row = repo.get_defect(env["conn"], view["defect_no"])
+        assert row["line_id"] == "line-02"
