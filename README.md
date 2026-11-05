@@ -636,6 +636,9 @@ PowerShell 先执行 `chcp 65001`；服务端文件读写统一 UTF-8，不受�
 ## 附录：快速自检清单
 
 ```bash
+# 0) 一条命令跑完整闭环（临时库，不入演示数据）
+python scripts/demo_closed_loop.py
+
 # 1) 全量单测
 python -m pytest tests/ -q
 
@@ -652,7 +655,7 @@ python scripts/ui_check.py 8000
 python scripts/ui_check_pages.py 8000
 ```
 
-四项全绿，即证明「鉴权 → 检索 → 问答 → 审计 → 审批 → 录入」主链路完整可用。
+前五项全绿，即证明「鉴权 → 检索 → 问答 → 审计 → 审批 → 录入」主链路完整可用；第 0 项是最快的验证方式。
 
 ---
 
