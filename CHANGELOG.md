@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 新增（工程化收尾：文档体系 + CI + 接口层测试）
+
+- 文档：新增 `docs/data-model.md`（12 表逐表 + 双时间戳 + 索引 + 查询手册 + 自检 SQL）、`docs/permissions.md`（三角色边界 + 三层防线 + 31 接口矩阵）、`docs/test-plan.md`（三层验证 + 用例地图 + 覆盖率现状 + 实测记录）、`docs/acceptance.md`（8 条验收标准逐条对照）、`docs/engineering.md`（分层约束 + 错误与降级 + 提交规范）、`docs/deployment.md`（本地/局域网/生产前六件事/排错表）
+- ADR：新建 `docs/adr/`，6 条决策记录（手写 JWT、SSE、三道版本闸、三色证据、双时间戳、降级非失败）+ 索引与模板
+- CI：`.github/workflows/ci.yml`——Python 3.9/3.11 双版本，编译门禁（ruff E9/F63/F7/F82）+ 全量单测 + shell 语法检查；**故意不装 faiss/jieba**，以此验证降级路径
+- 仓库规范：`.editorconfig`、`.gitattributes`（换行固定、二进制识别）
+- 测试：新增 `tests/test_api_routes.py` 25 例（HTTP 状态码、统一响应包、鉴权依赖、字段裁剪、页面可达），全量 214 通过 / 1 跳过；`core/` 覆盖率 88%，整体 80%
+- 新增 `scripts/demo_closed_loop.py`：一条命令在临时库上跑完「认证 → 检索 → 版本闸 → 录入 → 确认 → 归因 → 审批 → 审计」15 项断言，无需起服务、不污染演示数据
+- README 增「文档索引」表，测试徽章同步 214，自检清单加入一键闭环脚本
+
+### 修复
+
+- `fix(defects)`：班组长令牌未绑定 `line_id` 时原先退化为"全量可见"，改为 `line_scope()` 统一 40302 拒绝（新增 7 条单测覆盖列表/详情/建单/确认/工单校验/空串/QE 不受影响）
+- `fix(knowledge)`：无 jieba 时中英混排（如「螺纹外径 19.98mm 公差」）会被整段当成一个词，导致降级路径检索失效；改为按汉字段二元组 + ASCII 段分别切分
+- `fix(seed)`：知识库跳过日志重复打印版本前缀（`vv1` → `v1`）
+- 文档口径修正：演示账号统一为 `leader01` / `manager01`；`as_of` 带 SQL 时间闸的返回 `mode` 实为 `bm25_only`，验收断言改看命中版本集合
 ### 新增（阶段 3 · 批次 1c：对话审计 + 归因审批）
 
 - 数据层：`chat_message` 增审计标记列（根因结论/无引用/废止版本 + 人工核查三列）与 `chat_session.batch_no`，SQLite 逐条 ALTER 迁移，旧库可直接升级
