@@ -114,3 +114,128 @@ _MIGRATION_SQL = [
 - 新字段一律带 `DEFAULT`，保证旧行可读（`flag_*` 默认 0，即"未命中"，语义正确）；
 - 不改列类型、不改列名——SQLite 的列改名要靠重建表，课程项目阶段不值得引入迁移框架；
 - 需要"废弃"的列不删，只停止写入并在文档标注（如 `defect_item.status` 预留 `judged`，阶段 4 才启用）。
+
+---
+
+## 6. 常用查询手册
+
+下面 6 条查询覆盖了系统全部高频读路径。每条都对应一个 `repo` 函数，SQL 不是随手写的，注释里写清了它防的那个坑。
+
+### 6.1 按业务时刻取"当时有效"的切片（版本闸核心）
+
+```python
+repo.list_chunks_as_of(conn, as_of="2026-06-01")
+```
+
+```sql
+SELECT c.*, d.doc_name, d.doc_type, d.version, d.effective_from,
+       d.effective_to, d.doc_id AS _doc_id
+  FROM kb_chunk c JOIN kb_doc d ON c.doc_id = d.doc_id
+ WHERE d.status = 'active'
+   AND (d.effective_from IS NULL OR d.effective_from = '' OR d.effective_from <= '2026-06-01')
+   AND (d.effective_to   IS NULL OR d.effective_to   = '' OR d.effective_to   >= '2026-06-01')
+ ORDER BY d.doc_name, d.version, c.seq_no;
+```
+
+三个细节：
+
+- `as_of` 只取前 10 位（`str(as_of)[:10]`），因为 `effective_from/to` 是日期串；传 ISO 时刻也能工作，不用调用方先格式化；
+- `IS NULL OR = ''` 的兜底不是废话：阶段 1 的旧数据没有生效区间，升级后如果严格要求 `effective_from <= ?`，这些切片会突然从检索里消失，表现为"昨天还能答，今天库里什么都检索不到"；
+- 返回结构与 `data/phase1_index/chunks.json` **同构**（`source_file` / `heading` / `doc_meta`），因此检索层拿到结果可直接建 BM25，无需为 DB 路径写第二套索引代码——这是"降级不降能力"的实现方式。
+
+### 6.2 检索时强制按产线过滤（数据级权限）
+
+```python
+repo.list_defects(conn, line_id="LINE-A", limit=50)   # 班组长
+repo.list_defects(conn, limit=50)                      # 质量工程师 / 主管
+```
+
+过滤发生在 SQL 的 `WHERE line_id = ?`，不是取回后在 Python 里 `if` 掉。区别在于：前者"不存在"，后者"存在但被跳过"——后端只要有一处忘了跳，就越权了。接口层 `require_roles("shift_leader")` 与这里形成两道独立防线，任一道单独失效都不至于泄漏。
+
+### 6.3 离线补传的幂等查询
+
+```python
+row = repo.get_defect_by_draft_id(conn, client_draft_id)
+if row:                      # 已经落过库，直接返回原单
+    return repo.get_defect(conn, row["defect_no"])
+```
+
+靠 `client_draft_id UNIQUE` 兜底：即使两个请求并发穿过上面的 `if`，第二条 `INSERT` 会被唯一约束打回，服务层捕获后同样返回原单。**先查后插 + 唯一约束**是幂等的最小完备实现，缺一不可。
+
+### 6.4 对话审计列表（多条件筛选）
+
+```python
+repo.list_audit_messages(conn, role="quality_engineer", batch_no="2026-11",
+                         date_from="2026-11-01", date_to="2026-11-30",
+                         only_flagged=True)
+```
+
+```sql
+SELECT m.*, s.user_id, s.role AS session_role, s.batch_no, s.title AS session_title
+  FROM chat_message m JOIN chat_session s ON m.session_id = s.session_id
+ WHERE m.role = 'assistant'
+   AND (m.flag_root_cause = 1 OR m.flag_no_citation = 1 OR m.flag_stale_version = 1)
+ ORDER BY m.occurred_at DESC, m.rowid DESC LIMIT 200;
+```
+
+- 只查 `role='assistant'`：审计对象是**回答**，用户提问不需要核查；
+- `date_to` 自动补 `T23:59:59`，否则"筛选到 11 月 30 日"会漏掉当天所有记录（字符串比较下 `"2026-11-30T09:00" > "2026-11-30"`）；
+- `ORDER BY ... , m.rowid DESC`：时间戳是秒级，同一秒内多条消息靠 `rowid` 定序，否则刷新两次顺序会变（`prompt_template_history` 有同样处理）。
+
+### 6.5 已下架版本集合（引用失效检测的判定源）
+
+```python
+archived = repo.archived_doc_versions(conn)     # {("检验规范", "v1"), ...}
+```
+
+```sql
+SELECT doc_name, version FROM kb_doc WHERE status = 'archived';
+```
+
+判定源必须是 `kb_doc.status`，和检索侧**同一个字段**。如果换成"切片上的某个标记"，就会出现检索已经排除、审计却认为有效（或反之）的分裂，审计结论就失去意义了。
+
+### 6.6 会话回放与最近 6 轮上下文
+
+```python
+repo.list_messages(conn, session_id)                 # 全量回放（前端恢复会话）
+repo.list_recent_messages(conn, session_id, limit=12) # 6 轮 = 12 条（拼提示词）
+```
+
+`build_history()` 必须在**写入本轮用户消息之前**取快照，否则当前问题会既出现在 `history` 里、又出现在 `question` 里，模型会看到同一个问题两遍；而且刚插入的用户消息后面没有 assistant 回复，还会在消息序列里留下一个空的 assistant 位。这个 bug 踩过一次，修法是把快照提前，不是什么精妙逻辑。
+
+---
+
+## 7. 初始化与种子数据
+
+```bash
+python -m quality_trace.core.repo.db        # 不推荐：只建表，没有数据
+python scripts/seed_demo_data.py            # 推荐：建表 + 用户 + 工单 + 缺陷码
+python scripts/seed_demo_data.py --kb       # 另外写入知识库切片
+python scripts/seed_demo_data.py --audit    # 另外造 3 条越界问答 + 2 张归因单
+```
+
+脚本是**幂等**的：用户按 `username` 存在即跳过，工单按 `work_order_id`、缺陷码按 `code` 同理。反复执行不会产生重复行，也不会覆盖你已经改过的密码。
+
+演示账号（密码 = 用户名）：
+
+| 用户名 | 角色 | 能进哪些页面 | 数据范围 |
+|---|---|---|---|
+| `qe001` | 质量工程师 | `/`、`/admin/*` 只读不了（40302） | 全产线 |
+| `sl001` | 班组长 | `/m` | 仅 `LINE-A` |
+| `qm001` | 质量主管 | `/admin/*` | 全产线 + 审批权 |
+
+自检建议（答辩现场最容易被问的三条）：
+
+```sql
+-- 1. 是否有同名同版本重复文档（应为 0）
+SELECT doc_name, version, COUNT(*) FROM kb_doc GROUP BY 1,2 HAVING COUNT(*) > 1;
+
+-- 2. 是否有确认后仍无缺陷码的单（应为 0）
+SELECT defect_no FROM defect_item WHERE status='pending' AND (defect_code IS NULL OR defect_code='');
+
+-- 3. 是否存在引用了已下架版本却未被标记的问答（应为 0）
+SELECT m.message_id FROM chat_message m
+  JOIN chat_message_citation c ON c.message_id = m.message_id
+  JOIN kb_doc d ON d.doc_name = c.source_file AND d.version = c.version
+ WHERE d.status = 'archived' AND m.flag_stale_version = 0;
+```
