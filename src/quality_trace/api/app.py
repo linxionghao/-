@@ -21,6 +21,7 @@ from quality_trace.api.routers import auth as auth_router
 from quality_trace.api.routers import chat as chat_router
 from quality_trace.api.routers import defects as defects_router
 from quality_trace.api.routers import genealogy as genealogy_router
+from quality_trace.api.routers import io as io_router
 from quality_trace.core.repo import db as repo
 from quality_trace.core.services.errors import ApiError
 
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(defects_router.router)      # 班组长现场录入接口
     app.include_router(analytics_router.router)    # 统计分析与 SPC 接口
     app.include_router(genealogy_router.router)    # 批次谱系追溯接口
+    app.include_router(io_router.router)           # 数据导入导出接口
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:

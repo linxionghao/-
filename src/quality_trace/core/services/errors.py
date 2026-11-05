@@ -19,6 +19,8 @@ class ErrorCode:
     BAD_REQUEST = 40001        # 请求参数缺失或格式错误
     QUESTION_TOO_LONG = 40002  # 问题长度超限
     PHOTO_INVALID = 40003      # 图片解码失败或超过 2MB
+    DATASET_UNSUPPORTED = 40004  # 导入/导出的数据集名不在白名单
+    IMPORT_EMPTY = 40005       # 导入文件没有数据行
 
     UNAUTHORIZED = 40101       # 未登录或身份无效
     LOGIN_FAILED = 40102       # 登录名或密码错误
@@ -42,6 +44,7 @@ class ErrorCode:
 
     FILE_TOO_LARGE = 41301     # 上传文件超过大小限制
     FILE_FORMAT = 41501        # 仅支持 Markdown 或 PDF
+    FILE_TYPE = 41502          # 导入仅支持 CSV/TSV 文本
 
     RATE_LIMITED = 42901       # 请求过于频繁
 
@@ -59,6 +62,8 @@ MESSAGES: Dict[int, str] = {
     ErrorCode.BAD_REQUEST: "请求参数缺失或格式错误",
     ErrorCode.QUESTION_TOO_LONG: "问题长度超出限制（最多 1000 字）",
     ErrorCode.PHOTO_INVALID: "图片解码失败或超过 2MB",
+    ErrorCode.DATASET_UNSUPPORTED: "不支持的数据集",
+    ErrorCode.IMPORT_EMPTY: "导入文件没有数据行",
     ErrorCode.UNAUTHORIZED: "未登录或身份无效",
     ErrorCode.LOGIN_FAILED: "登录名或密码错误",
     ErrorCode.TOKEN_EXPIRED: "登录已过期，请重新登录",
@@ -78,6 +83,7 @@ MESSAGES: Dict[int, str] = {
     ErrorCode.ATTR_STATE_INVALID: "当前仅允许审批未处理的归因单",
     ErrorCode.FILE_TOO_LARGE: "文件超过大小限制（10MB）",
     ErrorCode.FILE_FORMAT: "仅支持 Markdown 或 PDF 格式",
+    ErrorCode.FILE_TYPE: "导入仅支持 CSV/TSV 文本文件（Excel 请另存为 CSV）",
     ErrorCode.RATE_LIMITED: "请求过于频繁，请稍后再试",
     ErrorCode.EMBED_DEGRADED: "向量服务不可用，已切换关键词检索",
     ErrorCode.LLM_DEGRADED: "大模型不可用，仅返回检索依据",
