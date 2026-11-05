@@ -113,3 +113,78 @@ class TestRuleStaleVersion:
         citations = [{"source_file": None, "version": "v1"}, {"version": "v9"}]
         flags = audit.detect_flags("正文。", "complete", citations, set())
         assert flags["stale_version"] is False
+
+
+# ---------------------------------------------------------------------------
+# 落库与补扫：临时库验证「标记落库 + 不覆盖人工核查」
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def conn(tmp_path):
+    """独立临时库，避免污染演示数据。"""
+    c = repo.connect(str(tmp_path / "audit.db"))
+    repo.init_schema(c)
+    yield c
+    c.close()
+
+
+def _assistant(conn, content: str, *, status: str = "complete", session=None):
+    """写入一条 assistant 消息，返回 message_id。"""
+    sess = session or repo.create_session(conn, "qe-001", "quality_engineer")
+    return repo.save_message(conn, sess["session_id"], "assistant", content,
+                             status=status)
+
+
+class TestFlagMessage:
+    def test_flags_persisted(self, conn):
+        """flag_message 要把三列写进 chat_message，供管理页筛选。"""
+        mid = _assistant(conn, "根因已确定：切刀磨损。")
+        flags = audit.flag_message(conn, mid)
+        assert flags == {"root_cause": True, "no_citation": True,
+                         "stale_version": False}
+        row = repo.get_message(conn, mid)
+        assert row["flag_root_cause"] == 1 and row["flag_no_citation"] == 1
+
+    def test_ignores_user_message(self, conn):
+        """审计对象是回答：user 消息即使命中正则也不打标。"""
+        sess = repo.create_session(conn, "qe-001", "quality_engineer")
+        mid = repo.save_message(conn, sess["session_id"], "user", "根因已确定吗？")
+        flags = audit.flag_message(conn, mid)
+        assert not any(flags.values())
+        assert repo.get_message(conn, mid)["flag_root_cause"] == 0
+
+    def test_missing_message_safe(self, conn):
+        """不存在的消息 id 返回全 False，不抛异常（补扫遇到脏 id 时兜底）。"""
+        assert not any(audit.flag_message(conn, "msg-not-exist").values())
+
+
+class TestRescan:
+    def test_rescan_counts(self, conn):
+        """补扫统计口径：scanned 为 assistant 总数，flagged 为命中任一规则的条数。"""
+        archived_doc = repo.insert_doc(conn, "旧规范", "standard", "v1",
+                                       "2025-01-01", "2025-12-31")
+        repo.set_doc_status(conn, archived_doc["doc_id"], "archived", "tester")
+
+        mid1 = _assistant(conn, "根因已确定。")
+        mid2 = _assistant(conn, "按标准执行。")            # 无引用
+        mid3 = _assistant(conn, "按〔C1〕执行。")
+        repo.save_citations(conn, mid3, [{
+            "seq": 1, "chunk_id": "c1", "source_file": "旧规范",
+            "version": "v1", "section": "3.1", "snippet": "正文",
+        }])
+
+        result = audit.rescan_all(conn)
+        assert result["scanned"] == 3
+        assert result["flagged"] == 3
+        assert repo.get_message(conn, mid3)["flag_stale_version"] == 1
+
+    def test_rescan_keeps_reviewed(self, conn):
+        """机器重扫不得抹掉人工核查结论——审计链的可信度靠这条。"""
+        mid = _assistant(conn, "根因已确定。")
+        audit.flag_message(conn, mid)
+        repo.mark_reviewed(conn, mid, "manager-01", "已要求工程师补充验证")
+
+        audit.rescan_all(conn)
+        row = repo.get_message(conn, mid)
+        assert row["reviewed_by"] == "manager-01"
+        assert row["reviewed_note"] == "已要求工程师补充验证"
+        assert row["flag_root_cause"] == 1
