@@ -1,85 +1,50 @@
 # quality-trace
 
-> 制造业质量追溯与缺陷归因工具 —— 从批次谱系出发，把「这批货为什么不良」变成可核对、可复现的证据链。
+> 制造业质量追溯与缺陷归因工具 —— 把「这批货为什么不良」变成一条可核对、可复现、可审计的证据链。
 
-当前状态：**骨架阶段（v0.1.0）**。目录结构、配置、CLI、测试与 CI 已就位，业务逻辑待填充。
+一个不良品单进去，四样东西出来：**关联对象、疑似原因排序、影响范围清单、8D 草稿**。
 
-## 它要解决什么
+[![tests](https://img.shields.io/badge/tests-183%20passed-brightgreen)]()
+[![python](https://img.shields.io/badge/python-3.9%2B-blue)]()
+[![fastapi](https://img.shields.io/badge/FastAPI-async-009688)]()
+
+---
+
+## 目录
+
+1. [它要解决什么](#1-它要解决什么)
+2. [Quick Start：五分钟跑起来](#2-quick-start五分钟跑起来)
+3. [三个角色，三个入口](#3-三个角色三个入口)
+4. [功能地图](#4-功能地图)
+5. [架构总览](#5-架构总览)
+6. [知识库与检索：两个必须正面回答的陷阱](#6-知识库与检索两个必须正面回答的陷阱)
+7. [数据模型](#7-数据模型)
+8. [接口一览](#8-接口一览)
+9. [测试、冒烟与页面巡检](#9-测试冒烟与页面巡检)
+10. [工程约定与目录结构](#10-工程约定与目录结构)
+11. [常见问题](#11-常见问题)
+12. [边界与后续路线](#12-边界与后续路线)
+
+---
+
+## 1. 它要解决什么
 
 制造现场的两个问题通常被分开处理，结果两边都不彻底：
 
-1. **追溯**：这批成品的原料是哪一批、经过哪台设备、哪班人、哪次检验——散落在 ERP、MES、纸质单据里。
-2. **归因**：不良品单上写了「尺寸超差」，但到底是料、机、法、环、测哪一环出的问题，靠老师傅经验。
+1. **追溯**：这批成品的原料是哪一批、经过哪台设备、哪班人、哪次检验——散落在 ERP、MES、纸质单据里；
+2. **归因**：不良品单上写着「尺寸超差」，但到底是人、机、料、法、环、测哪一环出的问题，靠老师傅经验。
 
 本项目把两者接起来：**先有谱系，才谈归因；归因结论必须能落回具体批次、工序和时间窗口。**
 
-## 安装
+它不追求「AI 自动定责」。系统只做到 L3——**因果假设，且必须标注「待验证」**；
+L4 的根因确认需要人签字，这是产品红线，不是技术限制。
 
-```bash
-# Python 3.9+
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate      # Linux / macOS
+### 三条不可让步的设计原则
 
-pip install -r requirements-dev.txt
-pip install -e .
-```
+| 原则 | 落地方式 |
+|---|---|
+| **文档 ≠ 事实** | 检索到的条文只能作为「参考依据」，事实性陈述必须来自结构化数据行 |
+| **标准有版本** | 每份标准带版本号与生效区间；按业务时刻检索，废止版本物理上进不了候选集 |
+| **判定权在人** | 缺陷提交只到 `pending`，8D 只出草稿，根因只能写「疑似（待验证）」 |
 
-## 运行
-
-```bash
-# 命令行入口（安装后可用）
-quality-trace --version
-quality-trace --config config/default.yaml
-
-# 不安装也能跑：把 src 加进 PYTHONPATH
-set PYTHONPATH=src              # Windows
-python -m quality_trace.main --version
-
-# 示例
-python examples/demo.py
-
-# 测试
-pytest
-```
-
-## 目录结构
-
-```
-quality-trace/
-├── README.md              门面：是什么、怎么装、怎么跑
-├── LICENSE                MIT
-├── .gitignore             依赖、密钥、缓存
-├── .gitattributes         .sh 强制 LF
-├── .editorconfig          缩进与编码
-├── CHANGELOG.md           版本记录（Keep a Changelog）
-├── CONTRIBUTING.md        贡献指南（课程作业，暂不收外部 PR）
-├── requirements.txt       运行时依赖
-├── requirements-dev.txt   开发依赖
-├── pyproject.toml         打包、入口点、pytest/ruff 配置
-├── src/quality_trace/     源码主目录
-│   ├── __init__.py        版本号唯一来源
-│   ├── main.py            CLI 入口（只做参数解析与分发）
-│   ├── core/              核心业务逻辑（纯函数，可单测）
-│   └── utils/             通用小工具（配置、日志）
-├── docs/                  设计说明与接口文档
-├── tests/                 测试，与 src 结构对应
-├── examples/demo.py       可运行的示例
-├── scripts/               构建与部署（sh + ps1 双份）
-├── config/default.yaml    非机密默认配置
-├── data/                  样例数据（小文件）
-└── .github/               CI、Issue 模板、PR 模板
-```
-
-## 设计原则
-
-- **`core/` 不依赖 CLI、不读环境变量、不打印**：所有可测逻辑放这里，测试覆盖率优先保证它。
-- **配置外置**：`config/default.yaml` 提供默认值，`config/local.yaml`（已 ignore）覆盖，环境变量优先级最高。
-- **结论分层**：规则命中是硬证据，统计相关是软证据，因果假设必须标注「待验证」，最终归因由人签字。
-- **零魔法**：不做自动「AI 定责」。
-
-详见 `docs/design.md`。
-
-## 许可
-
-MIT，见 `LICENSE`。
+---
