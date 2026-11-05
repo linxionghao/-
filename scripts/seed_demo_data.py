@@ -84,7 +84,7 @@ def seed_kb(conn) -> None:
             )
             print(f"[知识库] {path.name} {version}：{result['chunk_count']} 片已登记")
         except Exception as exc:  # noqa: BLE001 —— 重复登记跳过即可
-            print(f"[知识库] {path.name} v{version} 跳过（{getattr(exc, 'message', exc)}）")
+            print(f"[知识库] {path.name} {version} 跳过（{getattr(exc, 'message', exc)}）")
 
     # 默认提示词模板：仅当库中没有任何 active 模板时灌入（不覆盖主管的修改）
     from quality_trace.core.repo import db as repo_mod
