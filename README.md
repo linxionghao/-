@@ -440,3 +440,50 @@ SSE 事件序列：`status`（正在检索依据…）→ `sources`（引用数�
 完整规范见 [`docs/api.md`](docs/api.md)；问答接口细节见 [`docs/chat-api.md`](docs/chat-api.md)。
 
 ---
+
+## 9. 测试、冒烟与页面巡检
+
+### 9.1 三层验证，各自解决不同问题
+
+| 层 | 命令 | 证明什么 |
+|---|---|---|
+| 单元/集成测试 | `python -m pytest tests/ -q` | 规则、状态机、权限、降级路径正确 |
+| 接口冒烟 | `bash scripts/smoke_stage3.sh` `/` `smoke_defects.sh` | 真实服务上 33 项断言全通过 |
+| 页面巡检 | `python scripts/ui_check.py` / `ui_check_pages.py` | 真实 Chrome 里页面无 JS 异常、流程可走通 |
+
+### 9.2 测试覆盖的重点
+
+| 文件 | 用例数 | 覆盖内容 |
+|---|---|---|
+| `test_knowledge.py` | 21 | 切片边界、分词降级、BM25 排序、RRF、FAISS/numpy 往返 |
+| `test_llm.py` | 4 | 无 Key 异常契约、流式解析 |
+| `test_chat_repo.py` / `test_chat_service.py` | 20+ | 会话归属、历史预算、SSE 事件、引用字段 |
+| `test_knowledge_admin.py` | 11 | 上传、版本冲突、下架零泄漏、模板即时生效 |
+| `test_audit.py` | 31 | 三规则正则、补扫、筛选、人工结论不被覆盖 |
+| `test_attribution.py` | 11 | 状态机、退回必填、8D 三条路径 |
+| `test_defects.py` | 43 | 归一化、双时间、幂等、字段裁剪、照片、工单校验 |
+| `test_version_gate.py` | 9 | 三版同库、废止零泄漏、as_of 格式 |
+| `test_auth.py` | 13 | JWT 往返/过期/篡改、登录防探测 |
+
+### 9.3 一个断言示例：废止版真的进不来
+
+```bash
+$ python -m pytest tests/test_version_gate.py -v
+tests/test_version_gate.py::TestVersionGate::test_as_of_hits_only_current_version PASSED
+tests/test_version_gate.py::TestVersionGate::test_archived_version_never_leaks PASSED
+tests/test_version_gate.py::TestVersionGate::test_future_version_not_visible PASSED
+...
+```
+
+### 9.4 页面巡检留证
+
+`scripts/ui_check.py` 用 Playwright 驱动**本机 Chrome**（不下载额外浏览器），
+走完「登录 → 填单 → 确认缺陷码 → 回执」并截图到 `docs/screenshots/`。
+任何未捕获的 JS 异常都会让脚本以非零码退出——页面白屏不会靠肉眼发现。
+
+```bash
+python scripts/ui_check.py 8000          # 移动端三步
+python scripts/ui_check_pages.py 8000    # 聊天页 + 后台五页
+```
+
+---
