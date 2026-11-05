@@ -1,0 +1,399 @@
+{% extends "base.html" %}
+{% block title %}测量系统分析{% endblock %}
+{% block nav_msa %}on{% endblock %}
+
+{% block content %}
+<h1>测量系统分析（MSA / GR&amp;R）</h1>
+<p class="muted" style="margin:-10px 0 18px">
+  %GRR 衡量的是「尺子多准」，不衡量「产品多好」。控制在 10% 以内才敢用它画控制图；
+  10~30% 只能用于非关键特性；超过 30% 时，控制图上的"异常"有一半是量具在抖。
+</p>
+
+<div class="msg" id="verdict-banner" style="display:block"></div>
+
+<div class="grid" id="ov" style="grid-template-columns: repeat(4, 1fr); margin-bottom:18px"></div>
+
+<div class="card">
+  <h2 style="font-size:15px;margin-bottom:10px">产线数据的读数一致性检查</h2>
+  <p class="muted" style="margin-bottom:12px">
+    产线数据<b>算不出 GR&R</b>：每件产品只测一次，"同一人重复测同一件"这件事不存在，
+    硬算出来的 %GRR 会到 90% 以上，那是算法制造的结论。<br>
+    但它能回答另一个问题：同一条线、同一张工单，不同班次的人读出来的水平一致吗？
+    差异显著（z &gt; 3）就说明测量方法没对齐——这是不需要额外试验就能查出来的。
+  </p>
+  <form class="inline" onsubmit="return false;">
+    <div style="flex:0 0 200px">
+      <label for="m-item">检验项目</label>
+      <select id="m-item" style="width:100%"></select>
+    </div>
+    <div style="flex:0 0 130px">
+      <label for="m-z">判定阈值（倍标准误）</label>
+      <input id="m-z" type="number" step="0.5" min="1" max="6" value="3" style="width:100%">
+    </div>
+    <button class="btn" id="btn-consistency">检查一致性</button>
+    <button class="btn ghost" id="btn-advice">看正式试验方案</button>
+  </form>
+  <div class="msg" id="m-msg"></div>
+  <div id="m-result"></div>
+</div>
+
+<div class="card">
+  <h2 style="font-size:15px;margin-bottom:10px">有实测值但从未做过 MSA 的项目</h2>
+  <div id="gaps"></div>
+</div>
+
+<div class="card">
+  <h2 style="font-size:15px;margin-bottom:10px">研究记录</h2>
+  <div id="studies"></div>
+</div>
+
+<div class="card" id="detail-card" style="display:none">
+  <h2 style="font-size:15px;margin-bottom:10px" id="detail-title">研究详情</h2>
+  <div id="detail"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .sub { font-size: 11px; color: #98a2b3; }
+  code { background: #f2f4f8; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  .num { font-size: 26px; font-weight: bold; }
+  .kv { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+  .kv div { background: #f8fafc; border-radius: 6px; padding: 10px 12px; }
+  .kv .k { font-size: 11px; color: #6b7787; }
+  .kv .v { font-size: 17px; font-weight: bold; margin-top: 3px; }
+  .bar { height: 8px; border-radius: 4px; background: #e6e9ef; overflow: hidden; margin-top: 6px; }
+  .bar > i { display: block; height: 100%; }
+  table.small td, table.small th { padding: 7px 9px; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover td { background: #f6f9ff; }
+  ul.rec { margin: 8px 0 0 18px; font-size: 13px; line-height: 1.8; }
+</style>
+<script>
+const $ = s => document.querySelector(s);
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function num(v, d) {
+  if (v === null || v === undefined || v === '') return '—';
+  return Number(v).toFixed(d === undefined ? 2 : d);
+}
+const VERDICT = {
+  accept:      { text: '可接受',   cls: 'on' },
+  conditional: { text: '有条件',   cls: 'std' },
+  reject:      { text: '不可接受', cls: 'off' },
+  unknown:     { text: '未知',     cls: 'cas' },
+};
+function vtag(v) {
+  const m = VERDICT[v] || VERDICT.unknown;
+  return `<span class="tag ${m.cls}">${m.text}</span>`;
+}
+function msg(el, text, kind) { el.className = 'msg ' + (kind || 'ok'); el.textContent = text; }
+
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+  const body = await res.json();
+  if (body.code !== 0) throw new Error(body.message || '请求失败');
+  return body.data;
+}
+function postJSON(path, data) {
+  return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                     body: JSON.stringify(data) });
+}
+
+/* ------------------------------------------------------------------ 概览 */
+async function loadOverview() {
+  const d = await api('/api/v1/msa/overview');
+  const banner = $('#verdict-banner');
+  const worst = (d.by_verdict.reject || 0) > 0 ? 'err'
+              : (d.by_verdict.conditional || 0) > 0 ? 'warn' : 'ok';
+  banner.className = 'msg ' + worst;
+  banner.style.display = 'block';
+  banner.textContent = d.verdict_text;
+
+  const cards = [
+    { num: d.studies, lbl: '研究次数', sub: '留档的 MSA 记录' },
+    { num: d.covered_items + ' / ' + d.items, lbl: '已做 MSA 的项目', sub: '覆盖率 ' + num(d.coverage * 100, 0) + '%',
+      color: d.coverage < 0.6 ? '#b0343c' : '#1f2b3a' },
+    { num: d.by_verdict.accept, lbl: '结论可接受', sub: '可直接用于控制图', color: '#217a37' },
+    { num: d.by_verdict.reject, lbl: '结论不可接受', sub: '需立项改进量具',
+      color: d.by_verdict.reject ? '#b0343c' : '#1f2b3a' },
+  ];
+  $('#ov').innerHTML = cards.map(c =>
+    `<div class="stat"><div class="num" style="color:${c.color || '#1f2b3a'}">${esc(c.num)}</div>
+     <div class="lbl">${c.lbl}</div><div class="sub">${esc(c.sub)}</div></div>`).join('');
+
+  // 缺口清单
+  const gaps = d.gaps || [];
+  $('#gaps').innerHTML = gaps.length ? `
+    <table class="small"><thead><tr>
+      <th>检验项目</th><th>产线</th><th>实测值条数</th><th>时间跨度</th><th></th>
+    </tr></thead><tbody>` +
+    gaps.map(g => `<tr>
+      <td><b>${esc(g.item_code)}</b></td>
+      <td>${esc(g.line_id)}</td>
+      <td>${g.records}</td>
+      <td class="sub">${esc(String(g.first_at).slice(0, 10))} ~ ${esc(String(g.last_at).slice(0, 10))}</td>
+      <td><button class="btn ghost" style="padding:4px 10px;font-size:12px"
+           onclick="pickItem('${esc(g.item_code)}')">去做评估</button></td>
+    </tr>`).join('') + '</tbody></table>'
+    : '<p class="muted">所有有实测值的项目都做过 MSA。</p>';
+}
+
+function pickItem(code) {
+  $('#m-item').value = code;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  $('#btn-preview').focus();
+}
+
+/* --------------------------------------------------------------- 研究列表 */
+async function loadStudies() {
+  const d = await api('/api/v1/msa/studies?limit=20');
+  if (!d.studies.length) {
+    $('#studies').innerHTML = '<p class="muted">还没有研究记录。先在上面选一个项目做一次，或用接口提交正式试验数据。</p>';
+    return;
+  }
+  $('#studies').innerHTML = `
+    <table class="small"><thead><tr>
+      <th>研究号</th><th>项目</th><th>设计</th><th>%GRR</th><th>ndc</th>
+      <th>结论</th><th>来源</th><th>时间</th>
+    </tr></thead><tbody>` +
+    d.studies.map(s => `<tr class="clickable" onclick="showDetail('${esc(s.study_id)}')">
+      <td><code>${esc(s.study_id)}</code></td>
+      <td><b>${esc(s.item_code)}</b></td>
+      <td class="sub">${esc(s.design_text)}</td>
+      <td>${num(s.pct_grr, 1)}%</td>
+      <td>${num(s.ndc, 1)}</td>
+      <td>${vtag(s.verdict)}</td>
+      <td class="sub">${s.source === 'measurements' ? '实测值折叠' : '正式试验'}</td>
+      <td class="sub">${esc(String(s.occurred_at).slice(0, 16).replace('T', ' '))}</td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+/* ------------------------------------------------------------------ 详情 */
+async function showDetail(id) {
+  try {
+    const d = await api('/api/v1/msa/studies/' + encodeURIComponent(id));
+    const r = d.result || {};
+    const ar = r.average_range || {};
+    const an = r.anova || {};
+    const p = r.percent || ar.percent || {};
+
+    const bars = [
+      { k: '重复性 %EV', v: p.ev, hint: '量具/夹具的固有变差' },
+      { k: '再现性 %AV', v: p.av, hint: '人与人之间的差异' },
+      { k: '合计 %GRR', v: p.grr, hint: '前两项合成' },
+      { k: '零件变差 %PV', v: p.pv, hint: '真实的过程变差' },
+    ];
+    const mkBar = b => {
+      const w = Math.min(100, Number(b.v || 0));
+      const color = w > 30 ? '#b0343c' : w > 10 ? '#a06a10' : '#217a37';
+      return `<div><div class="k">${b.k}<span class="sub"> · ${b.hint}</span></div>
+        <div class="v">${num(b.v, 1)}%</div>
+        <div class="bar"><i style="width:${w}%;background:${color}"></i></div></div>`;
+    };
+
+    let html = `
+      <div class="kv">
+        <div><div class="k">检验项目</div><div class="v">${esc(d.item_code)}</div></div>
+        <div><div class="k">量具</div><div class="v">${esc(d.gauge || '—')}</div></div>
+        <div><div class="k">设计</div><div class="v">${esc((d.design.appraisers || '?') + ' 人 × ' + (d.design.parts || '?') + ' 件 × ' + (d.design.trials || '?') + ' 次')}</div></div>
+        <div><div class="k">结论</div><div class="v">${vtag(d.verdict)}</div></div>
+      </div>
+      <div class="kv">${bars.map(mkBar).join('')}</div>`;
+
+    if (r.verdict && r.verdict.text) {
+      html += `<div class="msg ${d.verdict === 'reject' ? 'err' : d.verdict === 'conditional' ? 'warn' : 'ok'}"
+               style="display:block">${esc(r.verdict.text)}</div>`;
+    }
+
+    // 两种算法对比
+    if (an.ok) {
+      html += `<h3 style="font-size:14px;margin:14px 0 8px">两种算法对比</h3>
+        <table class="small"><thead><tr>
+          <th>算法</th><th>%EV</th><th>%AV</th><th>%GRR</th><th>%PV</th><th>ndc</th><th>结论</th>
+        </tr></thead><tbody>
+        <tr><td>均值极差法（现场）</td><td>${num(ar.percent.ev, 1)}</td><td>${num(ar.percent.av, 1)}</td>
+            <td><b>${num(ar.percent.grr, 1)}</b></td><td>${num(ar.percent.pv, 1)}</td>
+            <td>${num(ar.ndc, 1)}</td><td>${vtag(ar.verdict.level)}</td></tr>
+        <tr><td>ANOVA 法（含交互项）</td><td>${num(an.percent.ev, 1)}</td><td>${num(an.percent.av, 1)}</td>
+            <td><b>${num(an.percent.grr, 1)}</b></td><td>${num(an.percent.pv, 1)}</td>
+            <td>${num(an.ndc, 1)}</td><td>${vtag(an.verdict.level)}</td></tr>
+        </tbody></table>`;
+      if (r.consistency) {
+        html += `<p class="muted" style="margin-top:8px">${esc(r.consistency.note)}</p>`;
+      }
+      const vc = an.var_components || {};
+      html += `<h3 style="font-size:14px;margin:14px 0 8px">方差分量（ANOVA）</h3>
+        <table class="small"><thead><tr>
+          <th>重复性</th><th>交互项</th><th>评价人</th><th>零件</th><th>合计</th>
+        </tr></thead><tbody><tr>
+          <td>${num(vc.repeatability, 6)}</td><td>${num(vc.interaction, 6)}</td>
+          <td>${num(vc.appraiser, 6)}</td><td>${num(vc.part, 6)}</td>
+          <td>${num(vc.total, 6)}</td>
+        </tr></tbody></table>`;
+    }
+
+    if (r.pct_tolerance) {
+      html += `<p class="muted" style="margin-top:10px">
+        %Tolerance = <b>${num(r.pct_tolerance.grr, 2)}%</b>
+        （公差带 ${num(r.pct_tolerance.tolerance, 3)}）—— 客户审核看这个数。
+      </p>`;
+    }
+
+    if (r.recommendations && r.recommendations.length) {
+      html += `<h3 style="font-size:14px;margin:16px 0 6px">下一步建议</h3>
+        <ul class="rec">${r.recommendations.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    }
+
+    const warns = (r.average_range && r.average_range.warnings) || [];
+    if (warns.length) {
+      html += `<div class="msg warn" style="display:block;margin-top:12px">
+        ${warns.map(esc).join('<br>')}</div>`;
+    }
+
+    if (d.rows && d.rows.length) {
+      const n = d.rows.length;
+      html += `<details style="margin-top:14px">
+        <summary class="muted">原始读数（${n} 条，可用于重算与复核）</summary>
+        <table class="small" style="margin-top:8px"><thead><tr>
+          <th>评价人</th><th>零件</th><th>第几次</th><th>读数</th>
+        </tr></thead><tbody>` +
+        d.rows.slice(0, 60).map(x => `<tr><td>${esc(x.appraiser)}</td>
+          <td>${esc(x.part)}</td><td>${x.trial}</td><td>${x.value}</td></tr>`).join('') +
+        (n > 60 ? `<tr><td colspan="4" class="muted">… 其余 ${n - 60} 条省略</td></tr>` : '') +
+        `</tbody></table></details>`;
+    }
+
+    html += `<div style="margin-top:14px">
+      <button class="btn ghost" onclick="recompute('${esc(d.study_id)}')">用留档读数重算</button>
+      <span class="muted" id="rc-out" style="margin-left:10px"></span>
+    </div>`;
+
+    $('#detail-title').textContent = '研究详情 · ' + d.study_id;
+    $('#detail').innerHTML = html;
+    $('#detail-card').style.display = '';
+    $('#detail-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function recompute(id) {
+  try {
+    const d = await api('/api/v1/msa/studies/' + encodeURIComponent(id) + '/recompute',
+                        { method: 'POST' });
+    const delta = d.delta_pct_grr;
+    $('#rc-out').textContent = d.note + '（Δ%GRR = ' +
+      (delta === null ? '—' : (delta > 0 ? '+' : '') + delta.toFixed(2)) + '%）';
+  } catch (err) {
+    $('#rc-out').textContent = err.message;
+  }
+}
+
+/* ------------------------------------------------------------ 一致性检查 */
+async function loadItems() {
+  const ov = await api('/api/v1/analytics/items');
+  const codes = (ov.items || []).map(x => x.item_code);
+  $('#m-item').innerHTML = codes.length
+    ? codes.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')
+    : '<option value="">（暂无实测值）</option>';
+  return codes;
+}
+
+$('#btn-consistency').onclick = async () => {
+  const code = $('#m-item').value;
+  if (!code) { msg($('#m-msg'), '没有可选的检验项目', 'err'); return; }
+  try {
+    msg($('#m-msg'), '正在检查…', 'warn');
+    const z = $('#m-z').value || 3;
+    const d = await api('/api/v1/msa/consistency?item_code=' + encodeURIComponent(code)
+                        + '&z_limit=' + encodeURIComponent(z));
+    if (!d.ok) {
+      msg($('#m-msg'), d.message || '无法检查', 'err');
+      $('#m-result').innerHTML = '';
+      return;
+    }
+    const v = d.verdict || {};
+    let html = `<div class="msg ${v.level === 'reject' ? 'err' : v.level === 'conditional' ? 'warn' : 'ok'}"
+                style="display:block">${esc(v.text)}</div>
+      <div class="kv" style="margin-top:14px">
+        <div><div class="k">参与工单</div><div class="v">${d.work_orders}</div></div>
+        <div><div class="k">测量人</div><div class="v">${d.operators}</div></div>
+        <div><div class="k">组内合并 σ</div><div class="v">${num(d.sigma_pooled, 4)}</div></div>
+        <div><div class="k">超限工单</div><div class="v" style="color:${d.flagged_orders ? '#b0343c' : '#217a37'}">${d.flagged_orders}</div></div>
+      </div>`;
+
+    html += `<h3 style="font-size:14px;margin:14px 0 8px">各测量人的整体偏移</h3>
+      <table class="small"><thead><tr>
+        <th>测量人</th><th>读数条数</th><th>均值</th><th>与总均值差</th><th>z</th><th>判定</th>
+      </tr></thead><tbody>` +
+      d.operator_bias.map(o => `<tr>
+        <td>${esc(o.operator)}</td><td>${o.n}</td><td>${num(o.mean, 4)}</td>
+        <td>${o.delta > 0 ? '+' : ''}${num(o.delta, 4)}</td><td>${num(o.z, 2)}</td>
+        <td>${o.flagged ? '<span class="tag off">偏移显著</span>' : '<span class="tag on">一致</span>'}</td>
+      </tr>`).join('') + `</tbody></table>`;
+
+    html += `<h3 style="font-size:14px;margin:16px 0 8px">逐工单比较（只列前 15 张）</h3>
+      <table class="small"><thead><tr>
+        <th>工单</th><th>各人均值</th><th>最大均值差</th><th>比较</th><th>z</th><th>判定</th>
+      </tr></thead><tbody>` +
+      d.details.slice(0, 15).map(r => `<tr>
+        <td><code>${esc(r.work_order)}</code></td>
+        <td class="sub">${r.operators.map(o => esc(o.operator) + ' ' + num(o.mean, 4)).join(' / ')}</td>
+        <td>${num(r.max_diff, 4)}</td>
+        <td class="sub">${esc(r.pair)}</td>
+        <td>${num(r.z, 2)}</td>
+        <td>${r.flagged ? '<span class="tag off">显著</span>' : '<span class="tag on">一致</span>'}</td>
+      </tr>`).join('') + `</tbody></table>`;
+
+    html += `<div class="msg warn" style="display:block;margin-top:12px">${esc(d.caveat)}</div>`;
+
+    $('#m-result').innerHTML = html;
+    msg($('#m-msg'), '检查完成', 'ok');
+  } catch (err) {
+    msg($('#m-msg'), err.message, 'err');
+  }
+};
+
+$('#btn-advice').onclick = async () => {
+  const code = $('#m-item').value;
+  try {
+    const d = await api('/api/v1/msa/advice' + (code ? '?item_code=' + encodeURIComponent(code) : ''));
+    const p = d.plan || {};
+    $('#m-result').innerHTML = `
+      <div class="kv" style="margin-top:14px">
+        <div><div class="k">零件数</div><div class="v">${p.parts}</div></div>
+        <div><div class="k">评价人数</div><div class="v">${p.appraisers}</div></div>
+        <div><div class="k">每件试测次数</div><div class="v">${p.trials}</div></div>
+        <div><div class="k">公差带</div><div class="v">${d.tolerance === null ? '未记录' : num(d.tolerance, 3)}</div></div>
+      </div>
+      <p class="muted">${esc(p.note)}</p>
+      <p class="muted">${esc(d.tolerance_note)}</p>
+      <table class="small" style="margin-top:10px"><thead><tr>
+        <th>判定档位</th><th>含义</th>
+      </tr></thead><tbody>
+        <tr><td>可接受</td><td>${esc(d.thresholds.accept)}</td></tr>
+        <tr><td>有条件</td><td>${esc(d.thresholds.conditional)}</td></tr>
+        <tr><td>不可接受</td><td>${esc(d.thresholds.reject)}</td></tr>
+        <tr><td>ndc 下限</td><td>${d.thresholds.ndc_min}</td></tr>
+      </tbody></table>
+      <p class="muted" style="margin-top:10px">${esc(d.sample_size_tip)}</p>`;
+    msg($('#m-msg'), '方案已给出', 'ok');
+  } catch (err) {
+    msg($('#m-msg'), err.message, 'err');
+  }
+};
+
+(async () => {
+  try {
+    await loadOverview();
+    await loadItems();
+    await loadStudies();
+  } catch (err) {
+    msg($('#verdict-banner'), err.message, 'err');
+  }
+})();
+</script>
+{% endblock %}

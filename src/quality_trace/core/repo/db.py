@@ -1485,13 +1485,19 @@ def query_measurements(
 
 
 def list_measurement_items(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """有哪些检验项目、各多少条、规格限是什么（看板的下拉框与默认规格）。"""
+    """有哪些检验项目、各多少条、规格限是什么（看板的下拉框与默认规格）。
+
+    排序按**记录数降序**，不是按名称：下拉框的第一个选项就是默认选中项，
+    按名称排的话很可能落到一个只有几条读数的冷门项目上，
+    用户点开看板/一致性检查第一眼就是"数据不足"——他会以为系统坏了。
+    数据多的项目先出现，既是合理默认值，也让演示与日常使用都顺手。
+    """
     rows = conn.execute(
         "SELECT item_code, line_id, unit, COUNT(*) AS n,"
         " AVG(value) AS mean_value, MIN(value) AS min_value, MAX(value) AS max_value,"
         " MAX(usl) AS usl, MIN(lsl) AS lsl"
         " FROM meas_record GROUP BY item_code, line_id, unit"
-        " ORDER BY item_code, line_id"
+        " ORDER BY n DESC, item_code, line_id"
     ).fetchall()
     return [dict(r) for r in rows]
 

@@ -251,9 +251,12 @@ def main() -> None:
     if args.audit:
         seed_audit_demo(conn)
     seed_defects(conn)          # 字典与工单是两条前端的地基，始终灌入（幂等）
+    # 顺序有讲究：先造跨日工单（每单一天），实测值才能挂到具体工单上。
+    # 实测值挂不上工单时，MSA 折叠会退化成"只有 1 个零件"，算不出零件间变差。
+    seed_defect_records(conn)   # 看板演示：跨日缺陷单 + 每日一张工单（幂等）
     seed_measurements(conn)     # 看板演示：计量型实测值（幂等）
-    seed_defect_records(conn)   # 看板演示：跨日缺陷单（幂等）
     seed_lots(conn)             # 追溯演示：物料批与领料关系（幂等）
+    seed_msa_studies(conn)      # MSA 演示：一次合格 + 一次不合格
 
     print("种子数据完成。演示账号：qe001 / leader01 / manager01（密码同登录名）")
     conn.close()
@@ -278,18 +281,30 @@ def seed_measurements(conn, days: int = 14) -> None:
     rnd = _random.Random(20261106)      # 固定种子：图长得一样，便于截图对照
     today = _dt.date.today()
     total = 0
+    # 三个班次的人轮流测：真实产线不会只有一个人测，而 MSA 的再现性
+    # 恰恰要"人之间"的差异——全记一个人，从实测值折叠 MSA 会被直接拒绝。
+    operators = ("张三", "李四", "王五")
     for d in range(days - 1, -1, -1):
         day = (today - _dt.timedelta(days=d)).isoformat()
         for g in range(6):               # 每天 6 个子组（约每小时一次抽检）
             sg = (days - d - 1) * 6 + g + 1
+            operator = operators[g % len(operators)]
+            # 人与人之间有极小的读数习惯差异（量具夹持力不同），
+            # 幅度必须远小于过程变差，否则 %GRR 会被这批演示数据算成不合格
+            person_bias = {"张三": 0.0, "李四": 0.001, "王五": -0.001}[operator]
             # 外径：均值 10.00，正常波动；最后 6 个子组加一点系统性偏移
             # （模拟刀具磨损：中心缓慢上移，X̄ 图的规则 2/6 会报出来）
             drift = 0.022 if sg > (days * 6 - 6) else 0.0
+            # 每张工单对应一天的生产，实测值必须挂在工单上——
+            # 这是 MSA 折叠能"按零件分组"的前提，也是追溯时能反查到物料批的锚点
+            wo = f"WO-DEMO-{days - d:02d}"
             for k in range(5):
                 repo.insert_measurement(
-                    conn, "外径", round(10.0 + drift + rnd.gauss(0, 0.020), 4),
-                    "line-01", subgroup_no=sg, usl=10.08, lsl=9.92,
-                    gauge="G-01", operator="qe001",
+                    conn, "外径",
+                    round(10.0 + drift + person_bias + rnd.gauss(0, 0.020), 4),
+                    "line-01", work_order_id=wo, subgroup_no=sg,
+                    usl=10.08, lsl=9.92,
+                    gauge="G-01", operator=operator,
                     occurred_at=f"{day}T{8 + g:02d}:00:00",
                 )
                 total += 1
@@ -297,9 +312,11 @@ def seed_measurements(conn, days: int = 14) -> None:
             # 壁厚：单件/子组，整体稳定，最后 5 个点开始下探（I-MR 图报警）
             step = -0.03 if sg > (days * 6 - 5) else 0.0
             repo.insert_measurement(
-                conn, "壁厚", round(2.0 + step + rnd.gauss(0, 0.010), 4),
-                "line-01", subgroup_no=sg, usl=2.06, lsl=1.94,
-                gauge="G-02", operator="qe001",
+                conn, "壁厚",
+                round(2.0 + step + person_bias + rnd.gauss(0, 0.010), 4),
+                "line-01", work_order_id=wo, subgroup_no=sg,
+                usl=2.06, lsl=1.94,
+                gauge="G-02", operator=operator,
                 occurred_at=f"{day}T{8 + g:02d}:30:00",
             )
             total += 1
@@ -398,6 +415,61 @@ def seed_lots(conn, days: int = 14) -> None:
                 )
                 n += 1
     print(f"[批次] {days} 批（3 家供应商，{n} 条领料关系）")
+
+
+def seed_msa_studies(conn) -> None:
+    """造两次 MSA 研究：一次合格（外径），一次不合格（壁厚）。
+
+    为什么演示数据里要故意留一个"不合格"：
+    全是合格品的系统没有说服力——评审会问"那不合格长什么样"。
+    而且 %GRR 不合格的那次正好用来演示"限用/复评"的处置路径。
+    """
+    if repo.count_msa_studies(conn) > 0:
+        print("[MSA] 已存在，跳过")
+        return
+
+    from quality_trace.core.services import msa as msa_svc
+
+    rnd = _random.Random(20261109)
+    today = _dt.date.today()
+
+    # ① 外径：3 人 × 10 件 × 2 次，量具 G-012，公差带 0.16mm
+    #    读数围绕 10.00 展开，重复性噪声很小 → %GRR 应当合格
+    rows = []
+    for appraiser in ("张三", "李四", "王五"):
+        offset = rnd.choice([-0.002, 0.0, 0.002])      # 人与人之间的微小偏置
+        for part in range(1, 11):
+            base = 10.0 + (part - 5.5) * 0.006          # 零件间差异
+            for trial in (1, 2):
+                rows.append({
+                    "appraiser": appraiser, "part": "P%02d" % part, "trial": trial,
+                    "value": round(base + offset + rnd.gauss(0, 0.004), 4),
+                })
+    msa_svc.create_study(
+        conn, item_code="外径", rows=rows, gauge="G-012", line_id="line-01",
+        tolerance=0.16, created_by="qe001",
+        occurred_at=(today - _dt.timedelta(days=3)).isoformat() + "T10:00:00",
+    )
+    print("[MSA] 外径：3 人 × 10 件 × 2 次（合格样本）")
+
+    # ② 壁厚：3 人 × 6 件 × 2 次，量具 G-007，公差带 0.12mm
+    #    读数很散（手工千分尺、无夹具）→ %GRR 应当不合格
+    rows2 = []
+    for appraiser in ("张三", "李四", "王五"):
+        offset = rnd.choice([-0.02, 0.01, 0.03])        # 人之间偏置明显
+        for part in range(1, 7):
+            base = 2.0 + (part - 3.5) * 0.004
+            for trial in (1, 2):
+                rows2.append({
+                    "appraiser": appraiser, "part": "P%02d" % part, "trial": trial,
+                    "value": round(base + offset + rnd.gauss(0, 0.03), 4),
+                })
+    msa_svc.create_study(
+        conn, item_code="壁厚", rows=rows2, gauge="G-007", line_id="line-01",
+        tolerance=0.12, created_by="qe001",
+        occurred_at=(today - _dt.timedelta(days=1)).isoformat() + "T15:30:00",
+    )
+    print("[MSA] 壁厚：3 人 × 6 件 × 2 次（不合格样本，演示限用与复评）")
 
 
 if __name__ == "__main__":

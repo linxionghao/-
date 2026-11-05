@@ -368,3 +368,31 @@ async def data_page(request: Request):
         request=request, name="data.html",
         context={"request": request, "user": user},
     )
+
+
+# ================================================================ 测量系统分析
+@router.get("/msa")
+async def msa_page(request: Request):
+    """测量系统分析页（GR&R 双算法 / 偏倚 / 线性 / 稳定性）。
+
+    这一页要回答的不是"GRR 是多少"，而是"我能不能相信看板上的 Cp/Cpk"。
+    所以页面顶部先给覆盖率与缺口清单，再给单次研究的细节——
+    顺序反了的话，用户会盯着一个 8.7% 的数字，而忽略"还有 5 个项目没做 MSA"。
+
+    权限：主管与质量工程师。班组长看不到这一页：他看到"尺子不合格"
+    只会得出"那我今天别测了"，而这该由质量工程师立项解决。
+    """
+    user = _page_user(request)
+    if user is None:
+        return RedirectResponse("/admin/login", status_code=303)
+    if user["role"] not in ("quality_manager", "quality_engineer"):
+        return HTMLResponse(
+            templates.get_template("forbidden.html").render(
+                {"request": request, "user": user}
+            ),
+            status_code=403,
+        )
+    return templates.TemplateResponse(
+        request=request, name="msa.html",
+        context={"request": request, "user": user},
+    )

@@ -156,113 +156,154 @@ class TestQuery:
 
 
 # ===========================================================================
-# 三、从实测值折叠
+# 三、产线数据一致性检查
 # ===========================================================================
 @pytest.fixture()
 def meas_conn(conn):
-    """3 个测量人 × 3 张工单 × 2 次读数，另加一个只被部分人测过的工单。"""
+    """3 个测量人 × 3 张工单 × 6 条读数，工单间有差异、人之间只有极小偏置。"""
     rows = []
-    for op in ("张三", "李四", "王五"):
+    for op, bias in (("张三", 0.0), ("李四", 0.0005), ("王五", -0.0005)):
         for wo in ("WO-01", "WO-02", "WO-03"):
-            for k in range(2):
+            base = {"WO-01": 10.0, "WO-02": 10.02, "WO-03": 10.04}[wo]
+            for k in range(6):
                 rows.append({
-                    "item_code": "外径", "value": 10.0 + 0.05 * k + 0.01 * hash(op) % 0.03,
+                    "item_code": "外径", "value": base + bias + 0.001 * (k % 3),
                     "line_id": "line-01", "work_order_id": wo, "operator": op,
-                    "subgroup_no": k + 1, "unit": "mm",
-                    "usl": 10.08, "lsl": 9.92,
-                    "occurred_at": "2026-11-0%d 08:0%d:00" % (k + 1, len(op)),
+                    "subgroup_no": k + 1, "unit": "mm", "usl": 10.08, "lsl": 9.92,
+                    "occurred_at": "2026-11-01 08:%02d:00" % k,
                 })
-    # 只被张三测过的工单：应当被剔除（不平衡）
-    rows.append({"item_code": "外径", "value": 10.02, "line_id": "line-01",
-                 "work_order_id": "WO-99", "operator": "张三", "subgroup_no": 1,
-                 "occurred_at": "2026-11-03 09:00:00"})
     repo.insert_measurements(conn, rows)
     return conn
 
 
-class TestFromMeasurements:
-    def test_folds_into_three_levels(self, meas_conn):
-        built = svc.build_rows_from_measurements(meas_conn, item_code="外径")
+def _rows_like(conn, item_code="外径"):
+    """复用一致性检查的结果做断言辅助。"""
+    return svc.consistency_check(conn, item_code=item_code)
+
+
+class TestBuildCells:
+    def test_groups_by_operator_and_work_order(self, meas_conn):
+        built = svc.build_cells(meas_conn, item_code="外径")
         assert built["ok"] is True
-        assert built["design"] == {"appraisers": 3, "parts": 3, "trials": 2}
-        assert sorted(built["appraisers"]) == ["张三", "李四", "王五"]
-        assert "WO-99" not in built["parts"]          # 不是所有人都测过 → 剔除
+        assert built["work_orders"] == 3
+        assert set(built["groups"]["WO-01"]) == {"张三", "李四", "王五"}
 
-    def test_flags_approximate(self, meas_conn):
-        """产线数据折叠出的 GRR 是近似值，必须显式说明。"""
-        built = svc.build_rows_from_measurements(meas_conn, item_code="外径")
-        assert built["approximate"] is True
-        assert any("高估" in n for n in built["notes"])
-        assert any("剔除" in n for n in built["notes"])
+    def test_min_readings_filters_cells(self, meas_conn):
+        repo.insert_measurements(meas_conn, [
+            {"item_code": "外径", "value": 10.0, "line_id": "line-01",
+             "work_order_id": "WO-01", "operator": "赵六", "occurred_at": "2026-11-01"},
+        ])
+        built = svc.build_cells(meas_conn, item_code="外径", min_readings=3)
+        # 赵六只有 1 条读数，不参与比较（1 个数谈不上均值）
+        assert "赵六" not in built["groups"]["WO-01"]
 
-    def test_no_records(self, meas_conn):
-        built = svc.build_rows_from_measurements(meas_conn, item_code="不存在")
+    def test_needs_two_operators(self, conn):
+        repo.insert_measurements(conn, [
+            {"item_code": "内径", "value": 5.0 + 0.01 * k, "line_id": "line-01",
+             "work_order_id": "WO-01", "operator": "张三",
+             "occurred_at": "2026-11-01 08:0%d:00" % k} for k in range(5)
+        ])
+        built = svc.build_cells(conn, item_code="内径")
         assert built["ok"] is False
-        assert "没有实测值" in built["message"]
+        assert "至少 2 个人" in built["message"]
 
-    def test_one_appraiser_is_rejected(self, conn):
-        """只有 1 个测量人时无法评估再现性，必须明确拒绝而不是给个假数。"""
+    def test_no_records(self, conn):
+        assert svc.build_cells(conn, item_code="不存在")["ok"] is False
+
+
+class TestConsistencyCheck:
+    def test_consistent_data_passes(self, meas_conn):
+        """人之间只差 0.0005，远小于组内噪声 → 判一致。"""
+        res = _rows_like(meas_conn)
+        assert res["ok"] is True
+        assert res["verdict"]["level"] == "accept"
+        assert res["flagged_orders"] == 0
+        assert res["sigma_pooled"] > 0
+
+    def test_flagged_when_one_operator_shifts(self, conn):
+        """让王五整体偏高 0.02（组内 σ≈0.001）→ 必须被抓出来。"""
+        rows = []
+        for op, bias in (("张三", 0.0), ("李四", 0.0), ("王五", 0.02)):
+            for k in range(10):
+                rows.append({"item_code": "外径", "value": 10.0 + bias + 0.001 * (k % 3),
+                             "line_id": "line-01", "work_order_id": "WO-01",
+                             "operator": op, "occurred_at": "2026-11-01 08:%02d:00" % k})
+        repo.insert_measurements(conn, rows)
+        res = svc.consistency_check(conn, item_code="外径")
+        assert res["verdict"]["level"] == "reject"
+        assert res["flagged_orders"] >= 1
+        assert any(o["flagged"] for o in res["operator_bias"])
+        assert "王五" in res["verdict"]["text"]
+
+    def test_pooled_sigma_not_global(self, conn):
+        """用全局标准差会掩盖人员偏移（噪声被工单间差异撑大）→ 必须用组内合并。
+
+        这里造"工单间差异极大、组内噪声极小、某人偏移中等"的数据：
+        用全局 σ 算 z 会 < 3（判一致），用组内 σ 算会 >> 3（判偏移）。
+        """
+        rows = []
+        for op, bias in (("张三", 0.0), ("李四", 0.0), ("王五", 0.05)):
+            for wo, base in (("WO-01", 10.0), ("WO-02", 12.0)):
+                for k in range(10):
+                    rows.append({"item_code": "外径",
+                                 "value": base + bias + 0.0005 * (k % 2),
+                                 "line_id": "line-01", "work_order_id": wo,
+                                 "operator": op,
+                                 "occurred_at": "2026-11-01 08:%02d:00" % k})
+        repo.insert_measurements(conn, rows)
+        res = svc.consistency_check(conn, item_code="外径")
+        assert res["sigma_pooled"] < 0.01          # 组内 σ 很小
+        assert res["flagged_orders"] >= 1           # 因此偏移被识别出来
+
+    def test_z_limit_is_configurable(self, conn):
+        rows = []
+        for op, bias in (("张三", 0.0), ("李四", 0.004)):
+            for k in range(10):
+                rows.append({"item_code": "外径", "value": 10.0 + bias + 0.001 * (k % 3),
+                             "line_id": "line-01", "work_order_id": "WO-01",
+                             "operator": op, "occurred_at": "2026-11-01 08:%0d:00" % k})
+        repo.insert_measurements(conn, rows)
+        # 阈值越严越容易判"显著"——这条性质本身就是接口正确性的证据
+        loose = svc.consistency_check(conn, item_code="外径", z_limit=25)
+        tight = svc.consistency_check(conn, item_code="外径", z_limit=1.5)
+        assert loose["flagged_orders"] == 0
+        assert tight["flagged_orders"] >= 1
+
+    def test_zero_sigma_is_reported(self, conn):
+        """所有读数完全相同 → 组内 σ=0，不能给出"一致"的假结论。"""
+        rows = []
+        for op in ("张三", "李四"):
+            for k in range(5):
+                rows.append({"item_code": "外径", "value": 10.0, "line_id": "line-01",
+                             "work_order_id": "WO-01", "operator": op,
+                             "occurred_at": "2026-11-01 08:0%d:00" % k})
+        repo.insert_measurements(conn, rows)
+        res = svc.consistency_check(conn, item_code="外径")
+        assert res["ok"] is False
+        assert "标准差为 0" in res["message"]
+
+    def test_caveat_always_says_not_grr(self, meas_conn):
+        """口径提示必须在结果里，别让用户把一致性检查当 GR&R 签字。"""
+        res = _rows_like(meas_conn)
+        assert "不是 GR" in res["caveat"]
+
+
+class TestDesignAdvice:
+    def test_plan_shape(self, meas_conn):
+        d = svc.design_advice(meas_conn, item_code="外径")
+        assert d["plan"]["parts"] == 10
+        assert d["plan"]["appraisers"] == 3
+        assert d["plan"]["trials"] == 3
+        assert d["tolerance"] == pytest.approx(0.16)
+        assert d["thresholds"]["ndc_min"] == 5
+
+    def test_without_spec(self, conn):
         repo.insert_measurements(conn, [
             {"item_code": "内径", "value": 5.0, "line_id": "line-01",
-             "work_order_id": "WO-01", "operator": "张三", "occurred_at": "2026-11-01"},
-            {"item_code": "内径", "value": 5.01, "line_id": "line-01",
-             "work_order_id": "WO-02", "operator": "张三", "occurred_at": "2026-11-01"},
-        ])
-        built = svc.build_rows_from_measurements(conn, item_code="内径")
-        assert built["ok"] is False
-        assert "1 个测量人" in built["message"]
-        with pytest.raises(ApiError) as exc:
-            svc.study_from_measurements(conn, item_code="内径")
-        assert exc.value.code == 40001
-
-    def test_study_from_measurements_persists(self, meas_conn):
-        res = svc.study_from_measurements(meas_conn, item_code="外径", created_by="qe001")
-        assert res["derived_from"]["approximate"] is True
-        assert res["study"]["source"] == "measurements"
-        assert repo.count_msa_studies(meas_conn) == 1
-        assert any("高估" in w for w in res["warnings"])
-
-    def test_max_parts_capped(self, meas_conn):
-        built = svc.build_rows_from_measurements(meas_conn, item_code="外径", max_parts=2)
-        assert built["design"]["parts"] == 2
-
-
-# ===========================================================================
-# 四、概览与覆盖率
-# ===========================================================================
-class TestOverview:
-    def test_empty_state_message(self, conn):
-        ov = svc.overview(conn)
-        assert ov["studies"] == 0
-        assert "没有任何 MSA 记录" in ov["verdict_text"]
-
-    def test_coverage_and_gaps(self, meas_conn):
-        repo.insert_measurements(meas_conn, [
-            {"item_code": "壁厚", "value": 2.0, "line_id": "line-01",
-             "work_order_id": "WO-01", "operator": "张三", "occurred_at": "2026-11-01"},
-        ])
-        ov = svc.overview(meas_conn)
-        assert ov["items"] == 2                 # 外径 + 壁厚
-        assert ov["covered_items"] == 0
-        assert ov["coverage"] == 0.0
-        assert {g["item_code"] for g in ov["gaps"]} == {"外径", "壁厚"}
-        # 一次研究都没做过时，空状态提示优先于覆盖率提示
-        assert "没有任何 MSA 记录" in ov["verdict_text"]
-
-        svc.create_study(meas_conn, item_code="外径", rows=_rows())
-        ov2 = svc.overview(meas_conn)
-        assert ov2["covered_items"] == 1
-        assert ov2["coverage"] == pytest.approx(0.5)
-        assert [g["item_code"] for g in ov2["gaps"]] == ["壁厚"]
-
-    def test_verdict_distribution(self, meas_conn):
-        svc.create_study(meas_conn, item_code="外径", rows=_rows())
-        ov = svc.overview(meas_conn)
-        assert sum(ov["by_verdict"].values()) == ov["studies"]
-
-    def test_caveat_present(self, conn):
-        """口径提示必须一直在，不能只在有数据时出现。"""
-        assert "尺子" in svc.overview(conn)["caveat"]
+             "occurred_at": "2026-11-01"}])
+        d = svc.design_advice(conn, item_code="内径")
+        assert d["tolerance"] is None
+        assert "没有记录规格上下限" in d["tolerance_note"]
 
 
 # ===========================================================================
@@ -366,16 +407,19 @@ class TestMsaApi:
         assert body["code"] == 0
         assert "note" in body["data"]
 
-    def test_from_measurements_preview_empty(self, client):
-        body = client.get("/api/v1/msa/from-measurements?item_code=不存在",
+    def test_consistency_requires_item(self, client):
+        r = client.get("/api/v1/msa/consistency", headers=_h(client))
+        assert r.status_code == 422
+
+    def test_consistency_without_data(self, client):
+        body = client.get("/api/v1/msa/consistency?item_code=不存在",
                           headers=_h(client)).json()
         assert body["code"] == 0
         assert body["data"]["ok"] is False
 
-    def test_from_measurements_commit_requires_data(self, client):
-        r = client.post("/api/v1/msa/from-measurements", headers=_h(client),
-                        json={"item_code": "不存在"})
-        assert r.status_code == 400
+    def test_advice_endpoint(self, client):
+        body = client.get("/api/v1/msa/advice?item_code=外径", headers=_h(client)).json()
+        assert body["data"]["plan"]["parts"] == 10
 
     def test_shift_leader_forbidden(self, client):
         h = _h(client, "leader01")

@@ -6,8 +6,8 @@
     #59 POST /msa/studies                   同上（提交一次研究：计算 + 留档）
     #60 GET  /msa/studies/{id}              同上（详情：结果快照 + 原始读数）
     #61 POST /msa/studies/{id}/recompute    同上（用留档读数重算，不覆盖）
-    #62 GET  /msa/from-measurements         同上（预览：从实测值折叠出的数据）
-    #63 POST /msa/from-measurements         同上（一键折叠 + 计算 + 留档）
+    #62 GET  /msa/consistency               同上（产线数据人员一致性检查，非 GR&R）
+    #63 GET  /msa/advice                    同上（正式 GR&R 试验方案建议）
     #64 GET  /msa/gaps                      同上（有实测值但没做过 MSA 的项目）
 
 为什么班组长没有权限：
@@ -153,65 +153,44 @@ async def recompute(
             "data": svc.recompute(conn, study_id, run_anova=run_anova)}
 
 
-# =========================================================== 从实测值折叠
-@router.get("/from-measurements")
-async def preview_from_measurements(
+# =========================================================== 产线数据一致性
+@router.get("/consistency")
+async def consistency(
     item_code: str = Query(..., description="检验项目"),
     line_id: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    max_parts: int = 10,
-    max_trials: int = 3,
+    min_readings: int = Query(default=3, ge=2, le=100,
+                              description="每个单元格最少读数条数"),
+    z_limit: float = Query(default=3.0, gt=0, le=6,
+                           description="均值差判定阈值（倍标准误）"),
     user: Dict[str, Any] = Depends(_engineer),   # noqa: ARG001
     conn=Depends(get_db),
 ) -> Dict[str, Any]:
-    """预览：产线实测值会被折叠成什么样的 MSA 数据。
+    """人员读数一致性检查（**不是 GR&R**）。
 
-    先给预览而不是直接算，是因为折叠是**近似**的（零件按工单归并），
-    用户得先看一眼"零件数/试测次数/剔除了几个零件"，再决定要不要出结论。
+    产线数据里每件产品只测一次，"同一人重复测同一件"这件事不存在，
+    于是重复性与零件变差无法分离——硬算出来的 %GRR 会到 90% 以上，
+    那个数字是算法制造的，不是产线的真实状态。
+
+    这个接口回答的是它答得了的问题：同一条线、同一张工单，
+    不同班次的人读出来的水平一致吗？差异显著就说明测量方法没对齐。
     """
-    built = svc.build_rows_from_measurements(
+    data = svc.consistency_check(
         conn, item_code=item_code, line_id=line_id,
         date_from=date_from, date_to=date_to,
-        max_parts=max_parts, max_trials=max_trials,
+        min_readings=min_readings, z_limit=z_limit,
     )
-    if not built.get("ok"):
-        return {"code": 0, "message": built.get("message") or "无法折叠",
-                "data": built}
-    # 预览同时给一份"如果用这批数据算，结论会是什么"
-    preview = calc.overview(built["rows"])
-    built["preview"] = preview
-    return {"code": 0, "message": "成功", "data": built}
+    return {"code": 0, "message": "成功" if data.get("ok") else data.get("message"),
+            "data": data}
 
 
-class FromMeasurementsIn(BaseModel):
-    """一键从实测值生成研究记录。"""
-
-    item_code: str = Field(min_length=1)
-    line_id: Optional[str] = None
-    date_from: Optional[str] = None
-    date_to: Optional[str] = None
-    tolerance: Optional[float] = Field(default=None, gt=0)
-    max_parts: int = Field(default=10, ge=2, le=10)
-    max_trials: int = Field(default=3, ge=2, le=5)
-
-
-@router.post("/from-measurements")
-async def create_from_measurements(
-    body: FromMeasurementsIn,
-    user: Dict[str, Any] = Depends(_engineer),
+@router.get("/advice")
+async def advice(
+    item_code: Optional[str] = None,
+    user: Dict[str, Any] = Depends(_engineer),   # noqa: ARG001
     conn=Depends(get_db),
 ) -> Dict[str, Any]:
-    """一键：折叠 → 计算 → 留档（source=measurements，证据强度弱于正式试验）。
-
-    max_parts 上限卡 10，因为 AIAG 的 K3 系数表到 10 为止；
-    放开上限只会得到一个"系数靠外推"的假结论。
-    """
-    result = svc.study_from_measurements(
-        conn, item_code=body.item_code, created_by=user.get("username", ""),
-        line_id=body.line_id, date_from=body.date_from, date_to=body.date_to,
-        tolerance=body.tolerance, max_parts=body.max_parts,
-        max_trials=body.max_trials,
-    )
-    return {"code": 0, "message": "研究已记录（数据来自产线实测值）",
-            "data": result}
+    """正式 GR&R 的试验方案建议（件数/人数/次数/判定阈值/公差带提醒）。"""
+    return {"code": 0, "message": "成功",
+            "data": svc.design_advice(conn, item_code=item_code)}
