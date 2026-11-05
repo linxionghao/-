@@ -235,7 +235,7 @@ export QT_LLM_API_KEY=sk-xxxx        # Windows: set QT_LLM_API_KEY=sk-xxxx
 | `core/knowledge/retrieval.py` | 分词、BM25、FAISS/numpy、RRF | 400+ |
 | `core/knowledge/prompts.py` | 系统提示词、消息装配 | 150+ |
 | `core/llm/client.py` | call_llm / stream_chat / embed_texts | 300+ |
-| `core/repo/db.py` | 13 张表 + 60 余个读写函数 | 1000+ |
+| `core/repo/db.py` | 12 张表 + 60 余个读写函数 | 1000+ |
 | `core/services/*.py` | 7 个服务模块 | 1200+ |
 | `api/*` | 路由、依赖、SSE 桥接 | 900+ |
 | `web/*` | 聊天页、移动端、6 个 Jinja2 模板 | 1500+ |
@@ -331,5 +331,43 @@ assert "v1" not in {h["chunk"]["doc_meta"]["version"] for h in hits}
 
 **降级语义的统一口径**：配置主动关闭不算降级；只有「配了但调用失败」才标 `degraded=true`。
 这条口径有测试固定，避免演示环境永远亮黄条。
+
+---
+
+## 7. 数据模型
+
+### 7.1 十二张表
+
+| 域 | 表 | 关键字段与约束 |
+|---|---|---|
+| 身份 | `sys_user` | `role`（三角色）、`line_id`（班组长绑产线）、username 唯一 |
+| 知识库 | `kb_doc` | 版本号 + 生效区间必填；`status` active/archived；同名同版本唯一索引 |
+|  | `kb_chunk` | 条款号、切片正文、字符数；外键指向 kb_doc |
+|  | `prompt_template` | 当前 active 模板正文；`updated_by / updated_at` |
+|  | `prompt_template_history` | 每次修改的全文快照，只增不删 |
+| 会话 | `chat_session` | 归属人、角色、`batch_no`（审计按批次筛）、状态 |
+|  | `chat_message` | 双时间 + `status`(partial/complete) + 三列越界标记 + 三列核查 |
+|  | `chat_message_citation` | 文档名/版本/条款/片段/分数，结构化可审计 |
+| 生产 | `work_order` | 工单号、产品、`line_id`（数据权限锚点） |
+|  | `defect_item` | 双时间、`is_backfill`、`client_draft_id` 唯一（离线幂等）、状态 draft/pending |
+|  | `defect_code` | 缺陷码字典：分组、`keywords_json`（回退匹配） |
+| 归因 | `attribution_order` | 证据链 JSON、L3 假设、审批状态机、8D 草稿缓存 |
+
+### 7.2 双时间列：为什么每张业务表都有两个时间
+
+```sql
+occurred_at  TEXT NOT NULL   -- 业务时刻：现场真正发生的时间（客户端传）
+recorded_at  TEXT NOT NULL   -- 录入时刻：数据落到系统的时间（服务端生成）
+```
+
+- 追溯要按**业务时刻**回答「当时的标准是哪一版」，而不是「录入时哪一版」；
+- 补录判定靠两者差值：> 60 秒即打 `is_backfill`，报表里单列统计，避免污染实时率；
+- 会话/消息/文档/缺陷/归因全部遵循同一约定，跨表时间口径一致。
+
+### 7.3 SQLite 升级策略
+
+- 建表全部 `CREATE TABLE IF NOT EXISTS`，可重复执行；
+- 新增列用逐条 `ALTER TABLE` 尝试（SQLite 无 `ADD COLUMN IF NOT EXISTS`），失败即视为已存在；
+- 已有数据库（阶段 2 建的 chat_message）可直接升级到批次 1c 的审计列，无需重建。
 
 ---
