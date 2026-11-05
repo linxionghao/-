@@ -5,6 +5,9 @@
     chat_session           会话
     chat_message           消息（含降级标记）
     chat_message_citation  引用（结构化落库，可单独审计）
+    defect_item            缺陷单（双时间 + 补录标记 + 离线幂等键）
+    defect_code            缺陷码字典（描述归一化的候选来源）
+    attribution_order      归因单（审批状态机 + 8D 草稿缓存）
 
 设计约定：
 - 沿用项目双时间列约定：occurred_at（业务时刻）/ recorded_at（入库时刻）；
@@ -16,6 +19,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import sqlite3
 import uuid
 from typing import Any, Dict, List, Optional, Sequence
@@ -836,6 +840,130 @@ def get_defect(conn: sqlite3.Connection, defect_no: str) -> Optional[Dict[str, A
         "SELECT * FROM defect_item WHERE defect_no = ?", (defect_no,)
     ).fetchone()
     return dict(row) if row else None
+
+
+def get_defect_by_draft_id(
+    conn: sqlite3.Connection, client_draft_id: str
+) -> Optional[Dict[str, Any]]:
+    """按离线暂存幂等键取单——补传重复提交时直接返回原单，绝不落第二条。"""
+    row = conn.execute(
+        "SELECT * FROM defect_item WHERE client_draft_id = ?", (client_draft_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_defects(
+    conn: sqlite3.Connection, *, line_id: Optional[str] = None,
+    status: Optional[str] = None, limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """缺陷单列表（最近的在前）。
+
+    line_id 非空时强制按产线过滤——班组长只能看本线，过滤在 SQL 层完成，
+    不依赖前端传参或页面隐藏。
+    """
+    sql = "SELECT * FROM defect_item"
+    conds, params = [], []
+    if line_id:
+        conds.append("line_id = ?"); params.append(line_id)
+    if status:
+        conds.append("status = ?"); params.append(status)
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY recorded_at DESC, rowid DESC LIMIT ?"
+    params.append(int(limit))
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def confirm_defect_code(
+    conn: sqlite3.Connection, defect_no: str, defect_code: str,
+    actor: str = "",
+) -> Optional[Dict[str, Any]]:
+    """人工确认缺陷码：draft → pending。
+
+    只写分类字段（defect_code），不写任何合格性判定——判定权在质量工程师。
+    返回 None 表示单据不存在或不是 draft（已确认过的不可改，避免审计歧义）。
+    """
+    cur = conn.execute(
+        "UPDATE defect_item SET defect_code=?, status='pending', confirmed_at=?,"
+        " created_by=COALESCE(NULLIF(created_by, ''), ?)"
+        " WHERE defect_no=? AND status='draft'",
+        (defect_code, _now(), actor, defect_no),
+    )
+    conn.commit()
+    return get_defect(conn, defect_no) if cur.rowcount > 0 else None
+
+
+def set_defect_photo(
+    conn: sqlite3.Connection, defect_no: str, photo_path: str
+) -> None:
+    """回写照片存储路径（先落库建单，再存文件，避免坏图阻塞建单）。"""
+    conn.execute(
+        "UPDATE defect_item SET photo_path=? WHERE defect_no=?",
+        (photo_path, defect_no),
+    )
+    conn.commit()
+
+
+def count_defects(conn: sqlite3.Connection, line_id: Optional[str] = None) -> int:
+    """缺陷单计数（移动端顶栏角标用）。"""
+    if line_id:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM defect_item WHERE line_id=?", (line_id,)
+        ).fetchone()
+    else:
+        row = conn.execute("SELECT COUNT(*) AS c FROM defect_item").fetchone()
+    return int(row["c"])
+
+
+# ================================================================ 缺陷码字典
+def upsert_defect_code(
+    conn: sqlite3.Connection, code: str, name: str, category: str = "其他",
+    keywords: Optional[List[str]] = None, sort_no: int = 0,
+) -> Dict[str, Any]:
+    """新增/更新缺陷码（幂等：code 为主键，重复执行只更新描述字段）。"""
+    payload = json.dumps(keywords or [], ensure_ascii=False)
+    conn.execute(
+        "INSERT INTO defect_code (code, name, category, keywords_json, sort_no)"
+        " VALUES (?,?,?,?,?)"
+        " ON CONFLICT(code) DO UPDATE SET name=excluded.name,"
+        " category=excluded.category, keywords_json=excluded.keywords_json,"
+        " sort_no=excluded.sort_no",
+        (code, name, category, payload, int(sort_no)),
+    )
+    conn.commit()
+    return get_defect_code(conn, code) or {}
+
+
+def get_defect_code(
+    conn: sqlite3.Connection, code: str
+) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        "SELECT * FROM defect_code WHERE code = ?", (code,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_defect_codes(
+    conn: sqlite3.Connection, status: str = "active"
+) -> List[Dict[str, Any]]:
+    """启用中的缺陷码，按分组与排序号返回（移动端分组按钮的数据源）。"""
+    rows = conn.execute(
+        "SELECT * FROM defect_code WHERE status = ?"
+        " ORDER BY category, sort_no, code",
+        (status,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def new_defect_no(conn: sqlite3.Connection) -> str:
+    """生成缺陷编号 DF-YYYYMMDD-NNNN（当日流水，进程内加锁由调用方保证）。"""
+    day = _now()[:10].replace("-", "")
+    prefix = f"DF-{day}-"
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM defect_item WHERE defect_no LIKE ?",
+        (prefix + "%",),
+    ).fetchone()
+    return f"{prefix}{int(row['c']) + 1:04d}"
 
 
 # ================================================================= 归因单
