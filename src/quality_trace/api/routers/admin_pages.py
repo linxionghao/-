@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 from pathlib import Path
 from typing import Dict
 
@@ -279,3 +280,40 @@ async def attribution_detail_page(request: Request, attribution_id: str):
         context={"request": request, "user": user, "attribution": row,
                  "defect": defect, "evidence": evidence, "not_found": False},
     )
+
+
+# ================================================================ 质量看板
+@router.get("/analytics")
+async def analytics_page(request: Request):
+    """质量看板（SPC / 帕累托 / 趋势）。
+
+    权限：主管与质量工程师。班组长不进后台——他的界面是 /m，
+    看板上的"哪条线最差"对现场是压力而不是工具，现场需要的是"我这一单该选哪个码"。
+
+    页面只出**骨架**，数据由 /api/v1/analytics/dashboard 现取。
+    为什么这页不做服务端直出：控制图要按项目切换、筛选要联动，
+    每一项都走一次整页刷新，体验会退回到 2005 年；而分析接口天然是 JSON 的。
+    与文档页/审计页的取舍不同，那两页的核心是"看列表"，适合直出。
+    """
+    user = _page_user(request)
+    if user is None:
+        return RedirectResponse("/admin/login", status_code=303)
+    if user["role"] not in ("quality_manager", "quality_engineer"):
+        return HTMLResponse(
+            templates.get_template("forbidden.html").render(
+                {"request": request, "user": user}
+            ),
+            status_code=403,
+        )
+
+    conn = request.app.state.db
+    today = _dt.date.today()
+    ctx = {
+        "request": request,
+        "user": user,
+        "lines": repo.distinct_lines(conn),
+        "items": repo.list_measurement_items(conn),
+        "default_from": (today - _dt.timedelta(days=29)).isoformat(),
+        "default_to": today.isoformat(),
+    }
+    return templates.TemplateResponse(request=request, name="analytics.html", context=ctx)

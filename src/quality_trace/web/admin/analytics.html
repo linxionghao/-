@@ -1,0 +1,583 @@
+{% extends "base.html" %}
+{% block title %}质量看板{% endblock %}
+{% block nav_analytics %}on{% endblock %}
+
+{% block content %}
+<h1>质量看板 · 统计过程控制</h1>
+
+<!-- 筛选条：所有图共用一套口径，改一次全页刷新 -->
+<div class="card">
+  <form class="inline" id="filters" onsubmit="return false;">
+    <div>
+      <label for="f-line">产线</label>
+      <select id="f-line">
+        <option value="">全部产线</option>
+        {% for ln in lines %}<option value="{{ ln }}">{{ ln }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="f-from">起始</label>
+      <input type="date" id="f-from" value="{{ default_from }}">
+    </div>
+    <div>
+      <label for="f-to">截止</label>
+      <input type="date" id="f-to" value="{{ default_to }}">
+    </div>
+    <div>
+      <label for="f-item">检验项目（控制图）</label>
+      <select id="f-item">
+        <option value="">不画控制图</option>
+        {% for it in items %}
+        <option value="{{ it.item_code }}">{{ it.item_code }}（{{ it.line_id }} · {{ it.n }} 条）</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn" id="btn-refresh">刷新</button>
+    <button class="btn ghost" id="btn-export">导出 CSV</button>
+  </form>
+  <p class="muted" style="margin-top:10px">
+    时间口径：<b>业务时间 occurred_at</b>（补录单归到实际发生日，不会污染今天的数据）。
+    不良率分母为工单计划产量——系统未采集实际产出，这一点在 KPI 卡片上也有标注。
+  </p>
+</div>
+
+<div class="msg" id="msg"></div>
+
+<!-- 一句话结论：先给结论，再给图。看板不是数据陈列柜 -->
+<div class="verdict" id="verdict" style="display:none"></div>
+
+<!-- KPI -->
+<div class="grid" id="kpis" style="margin-bottom:18px"></div>
+
+<!-- 趋势 -->
+<div class="card">
+  <div class="card-hd">
+    <h2>不良率趋势</h2>
+    <span class="muted" id="trend-note"></span>
+  </div>
+  <div id="chart-trend" class="chart"></div>
+</div>
+
+<!-- 帕累托 -->
+<div class="card">
+  <div class="card-hd">
+    <h2>帕累托 · 关键少数</h2>
+    <span class="muted" id="pareto-note"></span>
+  </div>
+  <div id="chart-pareto" class="chart"></div>
+  <table id="pareto-table" style="margin-top:14px"></table>
+</div>
+
+<!-- 两列：严重度 + 星期效应 -->
+<div class="two">
+  <div class="card">
+    <div class="card-hd"><h2>严重度分布</h2></div>
+    <div id="chart-severity" class="chart sm"></div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><h2>星期效应</h2></div>
+    <div id="chart-weekday" class="chart sm"></div>
+    <p class="muted" id="weekday-note" style="margin-top:8px"></p>
+  </div>
+</div>
+
+<!-- 控制图 -->
+<div class="card" id="spc-card">
+  <div class="card-hd">
+    <h2>控制图（SPC）</h2>
+    <span class="muted" id="spc-note"></span>
+  </div>
+  <div id="spc-body"><p class="muted">在上方选择「检验项目」后显示控制图。</p></div>
+</div>
+
+<!-- 数据质量 -->
+<div class="card">
+  <div class="card-hd"><h2>数据质量自检</h2></div>
+  <div id="dq"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .card-hd { display: flex; justify-content: space-between; align-items: baseline;
+             margin-bottom: 14px; }
+  .card-hd h2 { font-size: 15px; font-weight: 600; }
+  .verdict { background: #eef4ff; border-left: 4px solid #2f6fed; border-radius: 6px;
+             padding: 14px 18px; margin-bottom: 18px; font-size: 14px; line-height: 1.7; }
+  .verdict.bad { background: #fdecec; border-color: #b0343c; }
+  .verdict.warn { background: #fdf3e3; border-color: #a06a10; }
+  .grid.kpi { grid-template-columns: repeat(6, 1fr); }
+  .stat .num small { font-size: 13px; font-weight: normal; color: #6b7787; }
+  .stat .sub { font-size: 11px; color: #98a2b3; margin-top: 2px; }
+  .chart { width: 100%; height: 220px; }
+  .chart.sm { height: 180px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .two .card { margin-bottom: 18px; }
+  table.mini { font-size: 12px; }
+  table.mini th, table.mini td { padding: 6px 8px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px; }
+  .pill.A { background: #fdecec; color: #b0343c; }
+  .pill.B { background: #fdf3e3; color: #a06a10; }
+  .pill.C { background: #eef1f5; color: #6b7787; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+  .hint { font-size: 12px; color: #6b7787; margin-top: 8px; }
+  .cap { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
+  .cap .box { background: #f8fafc; border-radius: 6px; padding: 12px; text-align: center; }
+  .cap .box b { display: block; font-size: 20px; color: #1f2b3a; }
+  .cap .box span { font-size: 11px; color: #6b7787; }
+  .cap .box.good b { color: #217a37; }
+  .cap .box.bad b { color: #b0343c; }
+  .warnbox { background: #fdf3e3; color: #a06a10; padding: 10px 14px;
+             border-radius: 6px; font-size: 13px; margin-top: 12px; }
+</style>
+
+<script>
+/* =========================================================================
+ * 质量看板前端
+ *
+ * 设计选择：图表全部手写 SVG，不引 echarts。
+ * 理由不是"炫技"，是三条实际约束：
+ *   1. 离线可用——车间电脑常常没有外网，CDN 引不进来就是白屏；
+ *   2. 体积——一个 echarts 压缩包 1MB，本项目全部前端加起来才 200KB；
+ *   3. 控制图的"红点标记异常"需要精确控制每个点的渲染，
+ *      用图表库反而要写一堆 formatter 去覆盖默认行为。
+ *
+ * 数据流：一个请求拿全页数据（/api/v1/analytics/dashboard），
+ * 不让每张图各自发请求——那样会出现"KPI 有了、图还是空的"的半成品状态。
+ * ========================================================================= */
+
+const $ = (s) => document.querySelector(s);
+const MSG = $('#msg');
+
+function showMsg(text, kind) {
+  MSG.className = 'msg ' + (kind || 'err');
+  MSG.textContent = text;
+}
+function clearMsg() { MSG.className = 'msg'; MSG.textContent = ''; }
+
+function fmtPct(v, digits) {
+  return v === null || v === undefined ? '—' : (v * 100).toFixed(digits === undefined ? 1 : digits) + '%';
+}
+function fmtInt(v) {
+  return v === null || v === undefined ? '—' : Number(v).toLocaleString('zh-CN');
+}
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/* ------------------------------------------------------------------ SVG 工具 */
+const NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(NS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+function makeSvg(host, w, h) {
+  host.innerHTML = '';
+  const svg = svgEl('svg', { viewBox: `0 0 ${w} ${h}`, width: '100%', height: '100%',
+                             preserveAspectRatio: 'none' });
+  host.appendChild(svg);
+  return svg;
+}
+function text(svg, x, y, str, opts) {
+  const t = svgEl('text', Object.assign({
+    x: x, y: y, 'font-size': 11, fill: '#6b7787',
+    'font-family': 'Microsoft YaHei, PingFang SC, sans-serif'
+  }, opts || {}));
+  t.textContent = str;
+  svg.appendChild(t);
+  return t;
+}
+function axisY(svg, box, ticks, fmt) {
+  for (let i = 0; i <= ticks; i++) {
+    const y = box.y + box.h * i / ticks;
+    svg.appendChild(svgEl('line', { x1: box.x, y1: y, x2: box.x + box.w, y2: y,
+      stroke: '#eef1f5', 'stroke-width': 1 }));
+  }
+}
+
+/* ------------------------------------------------------------------ 折线图 */
+function lineChart(host, points, opts) {
+  const w = host.clientWidth || 800, h = host.clientHeight || 220;
+  const pad = { l: 48, r: 16, t: 14, b: 28 };
+  const box = { x: pad.l, y: pad.t, w: w - pad.l - pad.r, h: h - pad.t - pad.b };
+  const svg = makeSvg(host, w, h);
+
+  const vals = points.map(p => p.y).filter(v => v !== null && v !== undefined);
+  if (!vals.length) { text(svg, 20, h / 2, '暂无数据'); return; }
+  const max = Math.max.apply(null, vals), min = Math.min.apply(null, vals);
+  const span = (max - min) || 1;
+  const yOf = (v) => box.y + box.h - (v - min) / span * box.h;
+  const xOf = (i) => box.x + (points.length === 1 ? box.w / 2 : box.w * i / (points.length - 1));
+
+  axisY(svg, box, 4);
+  text(svg, 8, box.y + 4, opts.yLabel || '', {});
+  text(svg, 8, box.y + box.h, (opts.yFmt || String)(min), {});
+  text(svg, 8, box.y + 10, (opts.yFmt || String)(max), {});
+
+  // 折线（None 处断开：没生产的那天不该被连成一条直线）
+  let d = '', pen = false;
+  points.forEach((p, i) => {
+    if (p.y === null || p.y === undefined) { pen = false; return; }
+    d += (pen ? ' L' : ' M') + xOf(i).toFixed(1) + ' ' + yOf(p.y).toFixed(1);
+    pen = true;
+  });
+  svg.appendChild(svgEl('path', { d: d, fill: 'none', stroke: opts.color || '#2f6fed',
+                                  'stroke-width': 2, 'stroke-linejoin': 'round' }));
+  points.forEach((p, i) => {
+    if (p.y === null || p.y === undefined) return;
+    svg.appendChild(svgEl('circle', { cx: xOf(i), cy: yOf(p.y), r: 2.6,
+      fill: opts.color || '#2f6fed' }));
+  });
+
+  // X 轴标签：最多 6 个，避免挤成一团
+  const step = Math.max(1, Math.ceil(points.length / 6));
+  points.forEach((p, i) => {
+    if (i % step) return;
+    text(svg, xOf(i) - 16, h - 8, p.x, {});
+  });
+}
+
+/* ------------------------------------------------------------------ 帕累托 */
+function paretoChart(host, rows) {
+  const w = host.clientWidth || 800, h = host.clientHeight || 240;
+  const pad = { l: 48, r: 44, t: 14, b: 46 };
+  const box = { x: pad.l, y: pad.t, w: w - pad.l - pad.r, h: h - pad.t - pad.b };
+  const svg = makeSvg(host, w, h);
+  if (!rows.length) { text(svg, 20, h / 2, '暂无数据'); return; }
+
+  const max = Math.max.apply(null, rows.map(r => r.value)) || 1;
+  const bw = box.w / rows.length;
+  const yOf = (v) => box.y + box.h - v / max * box.h;
+  const yPct = (v) => box.y + box.h - v * box.h;
+
+  axisY(svg, box, 4);
+  text(svg, 8, box.y + 10, fmtInt(max), {});
+  text(svg, box.x + box.w + 6, box.y + 10, '100%', {});
+  text(svg, box.x + box.w + 6, box.y + box.h, '0%', {});
+
+  // 80% 参考线：帕累托的灵魂
+  const y80 = yPct(0.8);
+  svg.appendChild(svgEl('line', { x1: box.x, y1: y80, x2: box.x + box.w, y2: y80,
+    stroke: '#b0343c', 'stroke-width': 1, 'stroke-dasharray': '4 3' }));
+  text(svg, box.x + box.w - 40, y80 - 4, '80%', { fill: '#b0343c' });
+
+  rows.forEach((r, i) => {
+    const x = box.x + i * bw + bw * 0.18;
+    const barW = bw * 0.64;
+    const y = yOf(r.value);
+    const color = r.abc === 'A' ? '#2f6fed' : (r.abc === 'B' ? '#7aa6f5' : '#c8d3e4');
+    svg.appendChild(svgEl('rect', { x: x, y: y, width: barW, height: box.y + box.h - y,
+      fill: color, rx: 2 }));
+    if (r.value > 0) {
+      text(svg, x + barW / 2 - 8, y - 4, String(r.value), { 'font-size': 10 });
+    }
+    const label = String(r.key);
+    text(svg, x - 4, box.y + box.h + 14, label.length > 8 ? label.slice(0, 8) + '…' : label,
+         { 'font-size': 10 });
+  });
+
+  // 累计百分比折线
+  let d = '';
+  rows.forEach((r, i) => {
+    const cx = box.x + i * bw + bw / 2;
+    d += (i ? ' L' : ' M') + cx.toFixed(1) + ' ' + yPct(r.cum_ratio).toFixed(1);
+  });
+  svg.appendChild(svgEl('path', { d: d, fill: 'none', stroke: '#a06a10', 'stroke-width': 2 }));
+  rows.forEach((r, i) => {
+    const cx = box.x + i * bw + bw / 2;
+    svg.appendChild(svgEl('circle', { cx: cx, cy: yPct(r.cum_ratio), r: 3, fill: '#a06a10' }));
+  });
+}
+
+/* ------------------------------------------------------------------ 柱状图 */
+function barChart(host, rows, opts) {
+  const w = host.clientWidth || 380, h = host.clientHeight || 180;
+  const pad = { l: 40, r: 12, t: 12, b: 26 };
+  const box = { x: pad.l, y: pad.t, w: w - pad.l - pad.r, h: h - pad.t - pad.b };
+  const svg = makeSvg(host, w, h);
+  if (!rows.length) { text(svg, 20, h / 2, '暂无数据'); return; }
+
+  const max = Math.max.apply(null, rows.map(r => r.value)) || 1;
+  const bw = box.w / rows.length;
+  axisY(svg, box, 3);
+  rows.forEach((r, i) => {
+    const bh = r.value / max * box.h;
+    const x = box.x + i * bw + bw * 0.2;
+    svg.appendChild(svgEl('rect', { x: x, y: box.y + box.h - bh, width: bw * 0.6,
+      height: Math.max(bh, r.value ? 2 : 0), fill: (opts && opts.color) || '#2f6fed', rx: 2 }));
+    text(svg, x + bw * 0.3 - 6, box.y + box.h + 14, r.label,
+         { 'font-size': 10 });
+    if (r.value) text(svg, x + bw * 0.3 - 6, box.y + box.h - bh - 4, String(r.value),
+                      { 'font-size': 10 });
+  });
+}
+
+/* ------------------------------------------------------------------ 控制图 */
+function controlChart(host, series, title, opts) {
+  const w = host.clientWidth || 800, h = 190;
+  const pad = { l: 52, r: 62, t: 16, b: 24 };
+  const box = { x: pad.l, y: pad.t, w: w - pad.l - pad.r, h: h - pad.t - pad.b };
+  const svg = makeSvg(host, w, h);
+
+  const pts = series.points || [];
+  if (!pts.length) { text(svg, 20, h / 2, '暂无数据'); return; }
+
+  const center = series.center, ucl = series.ucl, lcl = series.lcl;
+  const cand = pts.concat([ucl, lcl, center].filter(v => v !== null && v !== undefined));
+  let min = Math.min.apply(null, cand), max = Math.max.apply(null, cand);
+  const pad2 = (max - min) * 0.15 || 1;
+  min -= pad2; max += pad2;
+  const yOf = (v) => box.y + box.h - (v - min) / (max - min) * box.h;
+  const xOf = (i) => box.x + (pts.length === 1 ? box.w / 2 : box.w * i / (pts.length - 1));
+
+  axisY(svg, box, 4);
+
+  // 中心线与上下控制限：控制限是"过程自己的声音"，用红虚线
+  [[center, '#217a37', 'CL'], [ucl, '#b0343c', 'UCL'], [lcl, '#b0343c', 'LCL']].forEach(([v, c, label]) => {
+    if (v === null || v === undefined) return;
+    const y = yOf(v);
+    svg.appendChild(svgEl('line', { x1: box.x, y1: y, x2: box.x + box.w, y2: y,
+      stroke: c, 'stroke-width': 1, 'stroke-dasharray': label === 'CL' ? '' : '5 3' }));
+    text(svg, box.x + box.w + 6, y + 4, label + ' ' + Number(v).toFixed(3),
+         { fill: c, 'font-size': 10 });
+  });
+
+  const ooc = new Set(series.out_of_control || []);
+  let d = '';
+  pts.forEach((v, i) => { d += (i ? ' L' : ' M') + xOf(i).toFixed(1) + ' ' + yOf(v).toFixed(1); });
+  svg.appendChild(svgEl('path', { d: d, fill: 'none', stroke: '#2f6fed', 'stroke-width': 1.5 }));
+
+  pts.forEach((v, i) => {
+    svg.appendChild(svgEl('circle', {
+      cx: xOf(i), cy: yOf(v), r: ooc.has(i) ? 4.5 : 2.8,
+      fill: ooc.has(i) ? '#b0343c' : '#2f6fed',
+      stroke: ooc.has(i) ? '#fff' : 'none', 'stroke-width': 1.5
+    }));
+  });
+
+  text(svg, 6, box.y + 8, title, { 'font-size': 11, fill: '#26303b' });
+  const labels = (opts && opts.labels) || [];
+  const step = Math.max(1, Math.ceil(pts.length / 6));
+  labels.forEach((lb, i) => {
+    if (i % step) return;
+    text(svg, xOf(i) - 18, h - 6, String(lb).slice(5, 16), { 'font-size': 10 });
+  });
+}
+
+/* =========================================================================
+ * 渲染
+ * ========================================================================= */
+function renderKpi(k) {
+  const cards = [
+    { num: fmtInt(k.orders), lbl: '不良单数', sub: '区间内录入的单据' },
+    { num: fmtInt(k.pieces), lbl: '不良件数', sub: '按每单 qty 求和' },
+    { num: k.ppm === null ? '—' : fmtInt(k.ppm), lbl: '不良率 PPM', sub: '分母=计划产量',
+      cls: k.ppm > 20000 ? 'bad' : (k.ppm > 5000 ? 'warn' : '') },
+    { num: fmtPct(k.backfill_ratio), lbl: '补录比例', sub: '>30% 说明事后补单',
+      cls: k.backfill_ratio > 0.3 ? 'warn' : '' },
+    { num: fmtInt(k.severe), lbl: '严重不良', sub: '需按 8D 立项' },
+    { num: fmtInt(k.uncoded), lbl: '缺缺陷码', sub: '已确认却未分类', cls: k.uncoded ? 'bad' : '' },
+  ];
+  $('#kpis').innerHTML = cards.map(c =>
+    `<div class="stat"><div class="num ${c.cls || ''}">${c.num}</div>
+     <div class="lbl">${c.lbl}</div><div class="sub">${c.sub}</div></div>`).join('');
+  $('#kpis').className = 'grid kpi';
+}
+
+function renderVerdict(ov) {
+  const v = $('#verdict');
+  v.style.display = 'block';
+  const bad = ov.kpi.ppm !== null && ov.kpi.ppm > 20000;
+  v.className = 'verdict' + (bad ? ' bad' : (ov.kpi.ppm > 5000 ? ' warn' : ''));
+  v.innerHTML = `<b>${esc(ov.verdict)}</b>
+    <div class="muted" style="margin-top:6px">
+      区间 ${esc(ov.range.date_from)} ~ ${esc(ov.range.date_to)}（${ov.range.days} 天）
+      · ${esc(ov.kpi.rate_basis)}</div>`;
+}
+
+function renderTrend(trend) {
+  const pts = trend.daily.map(b => ({ x: b.bucket, y: b.ppm }));
+  lineChart($('#chart-trend'), pts, {
+    color: '#2f6fed', yFmt: (v) => fmtInt(Math.round(v))
+  });
+  $('#trend-note').textContent = trend.message;
+}
+
+function renderPareto(p) {
+  paretoChart($('#chart-pareto'), p.rows);
+  $('#pareto-note').textContent = p.message || '';
+  const head = '<tr><th>#</th><th>项目</th><th>件数</th><th>占比</th><th>累计</th><th>类别</th></tr>';
+  const body = p.rows.map(r => `<tr>
+      <td>${r.rank === null ? '—' : r.rank}</td>
+      <td>${esc(r.key)}</td>
+      <td>${fmtInt(r.value)}</td>
+      <td>${fmtPct(r.ratio)}</td>
+      <td>${fmtPct(r.cum_ratio)}</td>
+      <td><span class="pill ${r.abc}">${r.abc}</span></td>
+    </tr>`).join('');
+  $('#pareto-table').className = 'mini';
+  $('#pareto-table').innerHTML = '<thead>' + head + '</thead><tbody>' + body + '</tbody>';
+}
+
+function renderSeverity(rows) {
+  barChart($('#chart-severity'),
+    rows.map(r => ({ label: r.severity, value: r.count })),
+    { color: '#b0343c' });
+}
+
+function renderWeekday(w) {
+  barChart($('#chart-weekday'),
+    w.rows.map(r => ({ label: r.name.replace('周', ''), value: Math.round(r.value) })),
+    { color: '#a06a10' });
+  $('#weekday-note').textContent = w.message;
+}
+
+function renderDq(dq) {
+  const cls = dq.ok ? 'ok' : 'warn';
+  let html = `<p class="muted">草稿占比 ${fmtPct(dq.draft_ratio)} · 补录占比 ${fmtPct(dq.backfill_ratio)}
+    · 缺码 ${dq.uncoded} 单</p>`;
+  if (dq.ok) {
+    html += '<p style="color:#217a37;font-size:13px;margin-top:8px">数据质量正常，结论可直接使用。</p>';
+  } else {
+    html += '<ul style="margin:8px 0 0 18px;font-size:13px;color:#a06a10">' +
+      dq.issues.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>';
+  }
+  $('#dq').innerHTML = html;
+  $('#dq').className = cls;
+}
+
+function renderSpc(chartRes) {
+  const host = $('#spc-body');
+  if (!chartRes) {
+    host.innerHTML = '<p class="muted">在上方选择「检验项目」后显示控制图。</p>';
+    $('#spc-note').textContent = '';
+    return;
+  }
+  if (!chartRes.ok) {
+    host.innerHTML = `<p class="muted">${esc(chartRes.message)}</p>`;
+    return;
+  }
+  if (chartRes.need_regroup) {
+    host.innerHTML = `<div class="warnbox">${esc(chartRes.message)}<br>
+      子组大小分布：${JSON.stringify(chartRes.size_distribution)}</div>`;
+    return;
+  }
+
+  const c = chartRes.chart;
+  const spec = chartRes.spec || {};
+  $('#spc-note').textContent = c.message;
+
+  let html = `<p class="hint">${esc(c.name)} · 共 ${chartRes.n_subgroups} 个子组
+    · 规格 ${spec.lsl === null ? '—' : spec.lsl} ~ ${spec.usl === null ? '—' : spec.usl}
+    ${chartRes.unit} ${chartRes.series_meta && chartRes.series_meta.gauges.length
+        ? '· 量具 ' + chartRes.series_meta.gauges.join('、') : ''}</p>
+    <div class="chart" id="spc-x"></div>
+    <div class="chart" id="spc-r"></div>`;
+  if (c.chart === 'individual_mr') {
+    html = html.replace('spc-r', 'spc-mr');
+  }
+  host.innerHTML = html;
+
+  controlChart($('#spc-x'), Object.assign({}, c.x, {
+    label: c.x.label
+  }), c.x.label, { labels: (chartRes.series_meta || {}).labels });
+
+  const second = c.chart === 'individual_mr' ? c.mr : c.r;
+  controlChart($('#spc-' + (c.chart === 'individual_mr' ? 'mr' : 'r')), second,
+    second.label, { labels: (chartRes.series_meta || {}).labels });
+
+  const cap = chartRes.capability;
+  if (cap && cap.ok) {
+    const box = (label, val, good) =>
+      `<div class="box ${good === true ? 'good' : (good === false ? 'bad' : '')}">
+        <b>${val === null ? '—' : val}</b><span>${label}</span></div>`;
+    host.innerHTML += `<div class="cap">
+      ${box('Cp', cap.cp, cap.cp >= 1.33)}
+      ${box('Cpk（关键）', cap.cpk, cap.cpk >= 1.33)}
+      ${box('Ppk', cap.ppk, cap.ppk >= 1.33)}
+      ${box('估算 PPM', fmtInt(cap.ppm_est), cap.ppm_est < 1000)}
+    </div>
+    <p class="hint"><b>${esc(cap.conclusion)}</b><br>${esc(cap.improve_hint || '')}</p>
+    ${(cap.warnings || []).length ? '<div class="warnbox">' + cap.warnings.map(esc).join('<br>') + '</div>' : ''}`;
+  } else if (cap === null) {
+    host.innerHTML += '<div class="warnbox">该检验项目没有规格限（USL/LSL），只出控制图，不做能力分析。</div>';
+  }
+}
+
+/* =========================================================================
+ * 取数
+ * ========================================================================= */
+function params() {
+  const q = new URLSearchParams();
+  const line = $('#f-line').value;
+  if (line) q.set('line_id', line);
+  if ($('#f-from').value) q.set('date_from', $('#f-from').value);
+  if ($('#f-to').value) q.set('date_to', $('#f-to').value);
+  const item = $('#f-item').value;
+  if (item) q.set('item_code', item);
+  return q;
+}
+
+async function load() {
+  clearMsg();
+  const q = params();
+  try {
+    const res = await fetch('/api/v1/analytics/dashboard?' + q.toString(), {
+      credentials: 'same-origin'
+    });
+    const body = await res.json();
+    if (body.code !== 0) {
+      showMsg(body.message || '加载失败');
+      return;
+    }
+    const d = body.data;
+    renderKpi(d.overview.kpi);
+    renderVerdict(d.overview);
+    renderTrend(d.overview.trend);
+    renderPareto(d.overview.pareto);
+    renderSeverity(d.overview.severity);
+    renderWeekday(d.weekday);
+    renderDq(d.overview.data_quality);
+    renderSpc(d.chart);
+    window.__last = d;
+  } catch (e) {
+    showMsg('请求失败：' + e.message);
+  }
+}
+
+/* 导出 CSV：不做后端接口，前端直接拼——数据本来就在手上，
+ * 多一次往返只会让"点了没反应"的概率变大 */
+function exportCsv() {
+  const d = window.__last;
+  if (!d) { showMsg('还没有数据可导出'); return; }
+  const rows = [['类型', '项目', '件数', '占比', '累计', 'ABC']];
+  d.overview.pareto.rows.forEach(r => {
+    rows.push([d.overview.pareto.weight_label, r.key, r.value, r.ratio, r.cum_ratio, r.abc]);
+  });
+  const csv = '\ufeff' + rows.map(r => r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `pareto-${d.overview.range.date_from}_${d.overview.range.date_to}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$('#btn-refresh').addEventListener('click', load);
+$('#btn-export').addEventListener('click', exportCsv);
+$('#f-line').addEventListener('change', load);
+$('#f-item').addEventListener('change', load);
+$('#f-from').addEventListener('change', load);
+$('#f-to').addEventListener('change', load);
+window.addEventListener('resize', () => {
+  if (window.__last) {
+    renderTrend(window.__last.overview.trend);
+    renderPareto(window.__last.overview.pareto);
+  }
+});
+load();
+</script>
+{% endblock %}

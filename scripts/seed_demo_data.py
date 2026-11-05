@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import datetime as _dt
+import random as _random
 from pathlib import Path
 
 # 让脚本能直接运行：把 src 加入 sys.path
@@ -249,9 +251,96 @@ def main() -> None:
     if args.audit:
         seed_audit_demo(conn)
     seed_defects(conn)          # 字典与工单是两条前端的地基，始终灌入（幂等）
+    seed_measurements(conn)     # 看板演示：计量型实测值（幂等）
+    seed_defect_records(conn)   # 看板演示：跨日缺陷单（幂等）
 
     print("种子数据完成。演示账号：qe001 / leader01 / manager01（密码同登录名）")
     conn.close()
+
+
+
+
+# ---------------------------------------------------------------------------
+# 阶段 4：看板演示数据（实测值 + 跨日缺陷记录）
+#
+# 为什么需要造这些：看板的每个图都要求"有跨日、有分布、有异常点"才看得出效果。
+# 只灌当天的几条数据，控制图只有一个点、趋势图只有一根柱子，
+# 演示时会被问"这图是不是坏了"。这里用**固定随机种子**造数据，
+# 每次跑出来的图完全一样——答辩时截图与现场演示能对上。
+# ---------------------------------------------------------------------------
+def seed_measurements(conn, days: int = 14) -> None:
+    """造计量型实测值：外径（5 件/子组，稳定）+ 壁厚（1 件/子组，含漂移）。"""
+    if repo.count_measurements(conn) > 0:
+        print("[实测值] 已存在，跳过（删表或换库可重新生成）")
+        return
+
+    rnd = _random.Random(20261106)      # 固定种子：图长得一样，便于截图对照
+    today = _dt.date.today()
+    total = 0
+    for d in range(days - 1, -1, -1):
+        day = (today - _dt.timedelta(days=d)).isoformat()
+        for g in range(6):               # 每天 6 个子组（约每小时一次抽检）
+            sg = (days - d - 1) * 6 + g + 1
+            # 外径：均值 10.00，正常波动；最后 6 个子组加一点系统性偏移
+            # （模拟刀具磨损：中心缓慢上移，X̄ 图的规则 2/6 会报出来）
+            drift = 0.022 if sg > (days * 6 - 6) else 0.0
+            for k in range(5):
+                repo.insert_measurement(
+                    conn, "外径", round(10.0 + drift + rnd.gauss(0, 0.020), 4),
+                    "line-01", subgroup_no=sg, usl=10.08, lsl=9.92,
+                    gauge="G-01", operator="qe001",
+                    occurred_at=f"{day}T{8 + g:02d}:00:00",
+                )
+                total += 1
+            # 壁厚：单件/子组，缓慢漂移（I-MR 图能看出来）
+            # 壁厚：单件/子组，整体稳定，最后 5 个点开始下探（I-MR 图报警）
+            step = -0.03 if sg > (days * 6 - 5) else 0.0
+            repo.insert_measurement(
+                conn, "壁厚", round(2.0 + step + rnd.gauss(0, 0.010), 4),
+                "line-01", subgroup_no=sg, usl=2.06, lsl=1.94,
+                gauge="G-02", operator="qe001",
+                occurred_at=f"{day}T{8 + g:02d}:30:00",
+            )
+            total += 1
+    print(f"[实测值] {total} 条（外径 5 件/子组 {days} 天，壁厚 1 件/子组）")
+
+
+def seed_defect_records(conn, days: int = 14) -> None:
+    """造跨日的缺陷单，让趋势/帕累托/星期效应有形状。"""
+    existing = conn.execute("SELECT COUNT(*) AS n FROM defect_item").fetchone()
+    if existing and existing["n"] > 0:
+        print("[缺陷单] 已存在，跳过")
+        return
+
+    rnd = _random.Random(20261107)
+    today = _dt.date.today()
+    plan = [
+        ("D-THREAD", 0.45, "螺纹外径偏小"), ("D-SURF", 0.25, "表面划伤"),
+        ("D-BURR", 0.15, "毛刺未清"), ("D-DIM", 0.10, "长度超差"),
+        ("D-OTHER", 0.05, "其他外观缺陷"),
+    ]
+    n = 0
+    for d in range(days - 1, -1, -1):
+        day = (today - _dt.timedelta(days=d)).isoformat()
+        for i in range(rnd.randint(2, 6)):
+            r = rnd.random()
+            acc = 0.0
+            code, desc = "D-OTHER", "其他外观缺陷"
+            for c, w, text in plan:
+                acc += w
+                if r <= acc:
+                    code, desc = c, text
+                    break
+            n += 1
+            repo.insert_defect(
+                conn, f"DF-DEMO-{n:04d}", "WO-20261030-001", "line-01",
+                description=desc, op_code=rnd.choice(["OP20", "OP30", "OP40"]),
+                qty=rnd.randint(1, 4),
+                severity=rnd.choice(["轻微", "一般", "一般", "严重"]),
+                defect_code=code, status="pending", created_by="u-demo-sl",
+                occurred_at=f"{day}T{rnd.randint(8, 17):02d}:{rnd.randint(0, 59):02d}:00",
+            )
+    print(f"[缺陷单] {n} 条（{days} 天，五种缺陷码，含严重单）")
 
 
 if __name__ == "__main__":

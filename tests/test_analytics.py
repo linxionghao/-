@@ -516,3 +516,37 @@ class TestTrend:
     def test_add_month_clamps_day(self):
         """1 月 31 日加一个月应得到 2 月 28/29 日，而不是抛异常。"""
         assert tr._add_month(tr.parse_date("2026-01-31")).isoformat() == "2026-02-28"
+
+
+class TestSigmaCaliber:
+    """回归：σ 的口径（曾经多除一次 √n，Cpk 虚高 2.2 倍）。"""
+
+    def test_sigma_within_is_piece_level(self):
+        import random
+        from statistics import pstdev
+
+        rnd = random.Random(7)
+        groups = [[10 + rnd.gauss(0, 0.02) for _ in range(5)] for _ in range(30)]
+        chart = spc.xbar_r_chart(groups)
+        sd = pstdev([v for g in groups for v in g])
+        # R̄/d2 是 σ 的无偏估计，与总体标准差应当在 ±25% 内一致；
+        # 若误写成 R̄/(d2·√n)，会掉到 sd 的 1/2.24，这里立刻失败
+        assert 0.75 * sd < chart["sigma_within"] < 1.25 * sd
+
+    def test_sigma_xbar_is_sigma_over_sqrt_n(self):
+        groups = [[10, 10.1, 9.9, 10.05, 9.95]] * 6
+        chart = spc.xbar_r_chart(groups)
+        assert chart["x"]["sigma"] == pytest.approx(chart["sigma_within"] / math.sqrt(5), abs=1e-6)
+
+    def test_cpk_uses_piece_sigma(self):
+        """Cpk 的 σ 必须是单件 σ；用错口径时 Cpk 会正好差 √n 倍。"""
+        import random
+        from statistics import pstdev
+
+        rnd = random.Random(11)
+        groups = [[10 + rnd.gauss(0, 0.02) for _ in range(5)] for _ in range(40)]
+        chart = spc.xbar_r_chart(groups)
+        values = [v for g in groups for v in g]
+        res = cap.assess(values, usl=10.1, lsl=9.9, sigma_within=chart["sigma_within"])
+        expect = (10.1 - 9.9) / (6 * pstdev(values))
+        assert res["cp"] == pytest.approx(expect, rel=0.3)

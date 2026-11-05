@@ -296,11 +296,13 @@ def xbar_r_chart(subgroups: Sequence[Sequence[float]]) -> Dict[str, object]:
     ucl_r = d4 * rbar
     lcl_r = max(0.0, d3 * rbar)  # R 不可能为负，D3=0 时下限就是 0
 
-    # 子组均值的标准差 = R̄ / (d2 * √n)
-    sigma_within = rbar / (D2_TABLE[n] * math.sqrt(n)) if rbar > 0 else 0.0
+    # 单件标准差 σ̂ = R̄ / d2 —— 这是"过程固有波动"，过程能力（Cpk）要用它。
+    # 曾经在这里多除了一次 √n，结果 Cpk 被放大 √n 倍（n=5 时虚高 2.2 倍），
+    # 看板上永远"能力优秀"，而且不会有任何报错。这是最容易写错、也最难发现的一处。
+    sigma_within = rbar / D2_TABLE[n] if rbar > 0 else 0.0
 
-    # X̄ 图用的是"均值的标准差"，即 σ/√n
-    sigma_xbar = rbar / (D2_TABLE[n] * math.sqrt(n))
+    # X̄ 图上的点是子组均值，其标准差 = σ/√n
+    sigma_xbar = sigma_within / math.sqrt(n)
 
     vx = nelson_rules(xbars, xbarbar, sigma_xbar)
     vr = nelson_rules(ranges, rbar, rbar / D2_TABLE[n] if rbar > 0 else 0.0)
