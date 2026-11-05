@@ -253,6 +253,7 @@ def main() -> None:
     seed_defects(conn)          # 字典与工单是两条前端的地基，始终灌入（幂等）
     seed_measurements(conn)     # 看板演示：计量型实测值（幂等）
     seed_defect_records(conn)   # 看板演示：跨日缺陷单（幂等）
+    seed_lots(conn)             # 追溯演示：物料批与领料关系（幂等）
 
     print("种子数据完成。演示账号：qe001 / leader01 / manager01（密码同登录名）")
     conn.close()
@@ -342,7 +343,7 @@ def seed_defect_records(conn, days: int = 14) -> None:
                     break
             n += 1
             repo.insert_defect(
-                conn, f"DF-DEMO-{n:04d}", "WO-20261030-001", "line-01",
+                conn, f"DF-DEMO-{n:04d}", f"WO-DEMO-{days - d:02d}", "line-01",
                 description=desc, op_code=rnd.choice(["OP20", "OP30", "OP40"]),
                 qty=rnd.randint(1, 4),
                 severity=rnd.choice(["轻微", "一般", "一般", "严重"]),
@@ -350,6 +351,53 @@ def seed_defect_records(conn, days: int = 14) -> None:
                 occurred_at=f"{day}T{rnd.randint(8, 17):02d}:{rnd.randint(0, 59):02d}:00",
             )
     print(f"[缺陷单] {n} 条（{days} 天，五种缺陷码，含严重单）")
+
+
+
+
+def seed_lots(conn, days: int = 14) -> None:
+    """造批次谱系：3 家供应商 × 每天 1 批钢料，挂到当天的工单上。
+
+    固定批号（LOT-DEMO-xx）保证幂等；供应商刻意做成"一家明显更差"，
+    这样记分卡上能看出排序，而不是三行一模一样的数字。
+    """
+    suppliers = [
+        ("SUP-华东特钢", 0.55, 1.0),
+        ("SUP-鑫达金属", 0.30, 2.2),      # 不良率明显偏高，用来演示"最差供应商"
+        ("SUP-南方线材", 0.15, 0.6),
+    ]
+    rnd = _random.Random(20261108)
+    today = _dt.date.today()
+    n = 0
+    for d in range(days - 1, -1, -1):
+        day = (today - _dt.timedelta(days=d)).isoformat()
+        wo = f"WO-DEMO-{days - d:02d}"
+        r = rnd.random()
+        acc = 0.0
+        supplier, weight, _badness = suppliers[0]
+        for name, w, badness in suppliers:
+            acc += w
+            if r <= acc:
+                supplier = name
+                break
+        lot_id = f"LOT-DEMO-{days - d:02d}"
+        repo.insert_material_lot(
+            conn, lot_id, "MAT-45#", "45# 圆钢 Φ20",
+            supplier=supplier, supplier_lot=f"S{rnd.randint(10000, 99999)}",
+            qty=rnd.choice([2000, 3000, 5000]), unit="kg", occurred_at=day,
+        )
+        # 一批料通常喂不止一张工单（一炉钢够两个班用），所以往后多挂一天。
+        # 只挂一张单会让"嫌疑排序"失去意义：每批料的样本都只有 1 单，
+        # 不良率就是那张单的不良率，排出来的顺序纯属噪声。
+        for offset in (0, 1):
+            target = f"WO-DEMO-{days - d + offset:02d}"
+            if repo.get_work_order(conn, target):
+                repo.link_lot_to_work_order(
+                    conn, lot_id, target, qty_used=rnd.choice([800, 1200, 1600]),
+                    op_code="OP10", occurred_at=day,
+                )
+                n += 1
+    print(f"[批次] {days} 批（3 家供应商，{n} 条领料关系）")
 
 
 if __name__ == "__main__":

@@ -226,6 +226,40 @@ CREATE INDEX IF NOT EXISTS idx_meas_item_time
     ON meas_record(item_code, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_meas_line_time
     ON meas_record(line_id, occurred_at);
+
+-- ---- 阶段 5：批次谱系（追溯的骨架）----
+-- 制造业追溯的本质是"物料批 × 工单"这张多对多表：
+--   一批料可能用在多张工单上（正查：这批料害了多少单）；
+--   一张工单可能吃多批料（反查：这单不良是哪批料造成的）。
+-- 只建这两张表、不建"批次树"，是因为真实产线是**网状**不是树状：
+-- 同一批钢卷可能先进冲压、再分流到两条装配线，树结构表达不了"分流"。
+CREATE TABLE IF NOT EXISTS material_lot (
+    lot_id        TEXT PRIMARY KEY,                    -- 内部批号，如 LOT-20261101-001
+    material_code TEXT NOT NULL,                       -- 物料编码
+    material_name TEXT NOT NULL,
+    supplier      TEXT,
+    supplier_lot  TEXT,                                -- 供应商批号（对外的追溯锚点）
+    qty           REAL NOT NULL DEFAULT 0,
+    unit          TEXT NOT NULL DEFAULT 'kg',
+    status        TEXT NOT NULL DEFAULT 'in_use',      -- in_use / consumed / quarantined
+    occurred_at   TEXT NOT NULL,                       -- 到货/投产时刻（业务时间）
+    recorded_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lot_material ON material_lot(material_code, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_lot_supplier ON material_lot(supplier);
+
+CREATE TABLE IF NOT EXISTS lot_consumption (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    lot_id        TEXT NOT NULL REFERENCES material_lot(lot_id),
+    work_order_id TEXT NOT NULL REFERENCES work_order(work_order_id),
+    qty_used      REAL NOT NULL DEFAULT 0,
+    op_code       TEXT,
+    occurred_at   TEXT NOT NULL,
+    recorded_at   TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lot_consume
+    ON lot_consumption(lot_id, work_order_id);         -- 同一批料在同一工单只记一次
+CREATE INDEX IF NOT EXISTS idx_consume_wo ON lot_consumption(work_order_id);
 """
 
 # ---- 增列迁移（SQLite 无 ADD COLUMN IF NOT EXISTS，逐条 try）----
@@ -1440,3 +1474,157 @@ def list_measurement_items(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
 def count_measurements(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS n FROM meas_record").fetchone()
     return int(row["n"]) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# 批次谱系（阶段 5）
+# ---------------------------------------------------------------------------
+def insert_material_lot(
+    conn: sqlite3.Connection,
+    lot_id: str,
+    material_code: str,
+    material_name: str,
+    *,
+    supplier: Optional[str] = None,
+    supplier_lot: Optional[str] = None,
+    qty: float = 0.0,
+    unit: str = "kg",
+    status: str = "in_use",
+    occurred_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """登记一个物料批（幂等：批号已存在直接返回）。
+
+    批号由业务给定而不是自增：外来物料的批号要能对上供应商的送货单，
+    自增号在跟供应商扯皮时毫无意义——对方只认他们自己的批号。
+    内部批号 `lot_id` 与 `supplier_lot` 分开存，正是为了"对内唯一、对外可对"。
+    """
+    row = conn.execute("SELECT * FROM material_lot WHERE lot_id=?", (lot_id,)).fetchone()
+    if row:
+        return dict(row)
+    now = _now()
+    conn.execute(
+        "INSERT INTO material_lot (lot_id, material_code, material_name, supplier,"
+        " supplier_lot, qty, unit, status, occurred_at, recorded_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (lot_id, material_code, material_name, supplier, supplier_lot,
+         float(qty), unit, status, occurred_at or now, now),
+    )
+    conn.commit()
+    return dict(conn.execute("SELECT * FROM material_lot WHERE lot_id=?", (lot_id,)).fetchone())
+
+
+def get_material_lot(conn: sqlite3.Connection, lot_id: str) -> Optional[Dict[str, Any]]:
+    row = conn.execute("SELECT * FROM material_lot WHERE lot_id=?", (lot_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_material_lots(
+    conn: sqlite3.Connection,
+    *,
+    supplier: Optional[str] = None,
+    material_code: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    """物料批列表（按下发时间倒序）。"""
+    sql = "SELECT * FROM material_lot WHERE 1=1"
+    params: List[Any] = []
+    for col, val in (("supplier", supplier), ("material_code", material_code), ("status", status)):
+        if val:
+            sql += " AND %s = ?" % col
+            params.append(val)
+    sql += " ORDER BY occurred_at DESC, rowid DESC LIMIT ?"
+    params.append(int(limit))
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def link_lot_to_work_order(
+    conn: sqlite3.Connection,
+    lot_id: str,
+    work_order_id: str,
+    *,
+    qty_used: float = 0.0,
+    op_code: Optional[str] = None,
+    occurred_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """记一笔"这批料用在了这张工单"。
+
+    唯一索引 (lot_id, work_order_id) 保证重复上报不会凭空放大影响面——
+    现场扫码枪抖一下连发两次是常态，如果每次都插一条，
+    一批料的"影响工单数"会翻倍，召回范围跟着翻倍，代价是真金白银。
+    """
+    now = _now()
+    ts = occurred_at or now
+    try:
+        conn.execute(
+            "INSERT INTO lot_consumption (lot_id, work_order_id, qty_used, op_code,"
+            " occurred_at, recorded_at) VALUES (?,?,?,?,?,?)",
+            (lot_id, work_order_id, float(qty_used), op_code, ts, now),
+        )
+        conn.commit()
+        inserted = True
+    except sqlite3.IntegrityError:
+        # 已存在：只补数量（可能第一次报的是部分投入），不改时间
+        conn.execute(
+            "UPDATE lot_consumption SET qty_used = qty_used + ?"
+            " WHERE lot_id=? AND work_order_id=?",
+            (float(qty_used), lot_id, work_order_id),
+        )
+        conn.commit()
+        inserted = False
+    row = conn.execute(
+        "SELECT * FROM lot_consumption WHERE lot_id=? AND work_order_id=?",
+        (lot_id, work_order_id),
+    ).fetchone()
+    out = dict(row) if row else {}
+    out["inserted"] = inserted
+    return out
+
+
+def list_work_orders_of_lot(conn: sqlite3.Connection, lot_id: str) -> List[Dict[str, Any]]:
+    """正查第一步：这批料进了哪些工单（带工单信息与用料量）。"""
+    rows = conn.execute(
+        "SELECT c.*, w.product_name, w.line_id, w.planned_qty, w.occurred_at AS wo_time"
+        " FROM lot_consumption c LEFT JOIN work_order w ON c.work_order_id = w.work_order_id"
+        " WHERE c.lot_id = ? ORDER BY c.occurred_at ASC",
+        (lot_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_lots_of_work_order(conn: sqlite3.Connection, work_order_id: str) -> List[Dict[str, Any]]:
+    """反查第一步：这张工单吃了哪些料（带批次与供应商信息）。"""
+    rows = conn.execute(
+        "SELECT c.qty_used, c.op_code, c.occurred_at AS used_at,"
+        " l.lot_id, l.material_code, l.material_name, l.supplier, l.supplier_lot,"
+        " l.qty AS lot_qty, l.unit, l.status, l.occurred_at AS received_at"
+        " FROM lot_consumption c JOIN material_lot l ON c.lot_id = l.lot_id"
+        " WHERE c.work_order_id = ? ORDER BY c.occurred_at ASC",
+        (work_order_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_suppliers(conn: sqlite3.Connection) -> List[str]:
+    rows = conn.execute(
+        "SELECT DISTINCT supplier FROM material_lot WHERE supplier IS NOT NULL"
+        " AND supplier <> '' ORDER BY 1"
+    ).fetchall()
+    return [r["supplier"] for r in rows]
+
+
+def count_lots(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS n FROM material_lot").fetchone()
+    return int(row["n"]) if row else 0
+
+
+def suppliers_of_defect(conn: sqlite3.Connection, defect_no: str) -> List[str]:
+    """一条不良单涉及哪些供应商（反查的快捷版，给看板打标用）。"""
+    rows = conn.execute(
+        "SELECT DISTINCT l.supplier FROM defect_item d"
+        " JOIN lot_consumption c ON c.work_order_id = d.work_order_id"
+        " JOIN material_lot l ON l.lot_id = c.lot_id"
+        " WHERE d.defect_no = ? AND l.supplier IS NOT NULL",
+        (defect_no,),
+    ).fetchall()
+    return [r["supplier"] for r in rows]
