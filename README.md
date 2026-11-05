@@ -594,3 +594,66 @@ chore(repo): 新增 .gitignore 并清理误跟踪的缓存
 PowerShell 先执行 `chcp 65001`；服务端文件读写统一 UTF-8，不受影响。
 
 ---
+
+## 12. 边界与后续路线
+
+### 12.1 明确不做的事
+
+| 不做 | 原因 |
+|---|---|
+| 通用 MES / ERP | 定位是「追溯 + 归因」，做成 MES 会稀释核心；只保留最小工单与缺陷单 |
+| 单件谱系（序列号级） | 课程场景是批次级；单件谱系需要产线扫码改造，成本不在本项目范围 |
+| 自动定责 / 自动判合格 | 质量责任必须人签字；系统只提供证据与假设，且恒标「待验证」 |
+| 物理删除历史数据 | 审计要求：下架、归档、退回都是状态变更，历史只增不删 |
+
+### 12.2 当前完成度
+
+| 模块 | 状态 | 验证方式 |
+|---|---|---|
+| 三角色 JWT 鉴权 + 数据级过滤 | ✅ | `tests/test_auth.py`、冒烟脚本越权断言 |
+| 知识库上传/切片/下架/重建 | ✅ | `tests/test_knowledge_admin.py` + 页面 |
+| 混合检索（BM25 + 向量 + RRF） | ✅ | `tests/test_knowledge.py`；向量通道可选 |
+| 版本失效三道闸（as_of） | ✅ | `tests/test_version_gate.py` 9 例 |
+| 问答 SSE + 引用 + 降级 | ✅ | `tests/test_chat_service.py` + 真实服务 |
+| 提示词存库、改完即生效 | ✅ | 后台页面与接口 |
+| 对话审计三规则 + 核查 | ✅ | `tests/test_audit.py` 31 例 |
+| 归因审批 + 8D 导出 | ✅ | `tests/test_attribution.py` 11 例 |
+| 现场录入 + 离线补传 | ✅ | `tests/test_defects.py` 43 例 + 真实 Chrome |
+| 批次级谱系（原料→工序→成品） | ⏳ 阶段 4 | — |
+| SPC 判异（Nelson 规则） | ⏳ 阶段 4 | — |
+| 归因 L1/L2 规则与统计引擎 | ⏳ 阶段 4 | — |
+
+### 12.3 下一步计划
+
+1. **谱系全表**：`material_batch / process_event / inspection` 建齐，支持正反向追溯查询；
+2. **SPC**：Nelson 八规则进入 `core/spc/`，与会话时间窗对齐，输出「异常点 + 规则编号」；
+3. **归因引擎**：L1 规则命中（刀具寿命、同批次、同设备）→ L2 统计相关（卡方/趋势）→ L3 假设排序；
+4. **判定闭环**：质量工程师判定接口（`judged` 状态），把「待判定」真正走完。
+
+---
+
+## 附录：快速自检清单
+
+```bash
+# 1) 全量单测
+python -m pytest tests/ -q
+
+# 2) 初始化 + 起服务
+python scripts/seed_demo_data.py --kb --audit
+bash scripts/run_server.sh
+
+# 3) 另开终端跑接口冒烟
+bash scripts/smoke_stage3.sh 8000
+bash scripts/smoke_defects.sh 8000
+
+# 4) 页面巡检（需本机 Chrome）
+python scripts/ui_check.py 8000
+python scripts/ui_check_pages.py 8000
+```
+
+四项全绿，即证明「鉴权 → 检索 → 问答 → 审计 → 审批 → 录入」主链路完整可用。
+
+---
+
+<sub>本项目为创新创业训练课程作业，需求基线见 [`docs/requirements.md`](docs/requirements.md)，
+架构决策见 [`docs/architecture.md`](docs/architecture.md)，变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。</sub>
