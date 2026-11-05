@@ -747,12 +747,30 @@ function bindEvents() {
     });
   });
 
-  document.getElementById("work-order").addEventListener("blur", e => {
+  /* 工单失焦即校验：把 40406 提前到填写阶段，别等提交才报错 */
+  document.getElementById("work-order").addEventListener("blur", async e => {
     const val = e.target.value.trim();
     const hint = document.getElementById("wo-hint");
-    hint.textContent = val
-      ? "工单号格式：" + (val.startsWith("WO-") ? "✓ 看起来正常" : "通常以 WO- 开头，请核对")
-      : "联网时失焦自动校验工单是否存在";
+    const err = document.getElementById("wo-err");
+    err.classList.remove("show");
+    if (!val) {
+      hint.textContent = "联网时失焦自动校验工单是否存在";
+      return;
+    }
+    if (!navigator.onLine) {
+      hint.textContent = "离线状态，工单将在补传时校验";
+      return;
+    }
+    hint.textContent = "校验中…";
+    try {
+      const data = await api("/work-orders/" + encodeURIComponent(val));
+      hint.textContent = "✓ " + data.product_name + " · " + data.line_id
+        + " · 计划 " + data.planned_qty + " 件";
+    } catch (ex) {
+      hint.textContent = "工单校验未通过";
+      err.textContent = ex.message;
+      err.classList.add("show");
+    }
   });
 
   window.addEventListener("online", () => {
