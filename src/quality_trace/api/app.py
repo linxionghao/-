@@ -18,6 +18,7 @@ from quality_trace.api.routers import admin as admin_router
 from quality_trace.api.routers import admin_pages
 from quality_trace.api.routers import auth as auth_router
 from quality_trace.api.routers import chat as chat_router
+from quality_trace.api.routers import defects as defects_router
 from quality_trace.core.repo import db as repo
 from quality_trace.core.services.errors import ApiError
 
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router.router)
     app.include_router(admin_router.router)        # 主管后台 JSON 接口
     app.include_router(admin_pages.router)         # 主管后台页面（服务端渲染）
+    app.include_router(defects_router.router)      # 班组长现场录入接口
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
