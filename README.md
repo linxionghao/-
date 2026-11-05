@@ -242,3 +242,53 @@ export QT_LLM_API_KEY=sk-xxxx        # Windows: set QT_LLM_API_KEY=sk-xxxx
 | `tests/*` | 12 个测试文件 | 1800+ |
 
 ---
+
+## 6. 知识库与检索：两个必须正面回答的陷阱
+
+### 6.1 陷阱一：v1 / v2 / v3 三版标准同时入库，只按相似度召回
+
+**问题**：如果检索只按向量相似度排序，废止版往往措辞更「标准」、与问题更相似，
+于是被当成现行要求写进答案——这在质量场景是事故，不是瑕疵。
+
+**做法：三道闸，全部在代码里，不靠提示词。**
+
+| 闸 | 位置 | 机制 |
+|---|---|---|
+| 第一道：入库即退出 | `kb_doc.status` | 下架 = `archived`，重建索引时整篇切片不写入 `chunks.json`；**物理上不在候选集** |
+| 第二道：按业务时刻 SQL 过滤 | `repo.list_chunks_as_of()` | `status='active' AND effective_from <= as_of <= effective_to`，在数据库里筛完再检索 |
+| 第三道：引用落库前复核 | `audit.detect_flags()` | 若引用指向已下架（文档名+版本），标记 `flag_stale_version`，主管审计可见 |
+
+第二道闸是核心。`POST /api/v1/chat` 接受 `as_of`：
+
+```json
+{"question": "当时的抽样方案是什么？", "as_of": "2026-06-01"}
+```
+
+服务层此时**不读索引文件**，直接从数据库按该时刻取有效切片再建 BM25。
+索引文件无法表达版本语义，这是它作为派生物必须让位的地方。
+
+同时写入检索元信息，前端与审计都能看到：
+
+```json
+{"mode": "bm25_as_of", "version_gate": "sql", "as_of": "2026-06-01", "hits": 1}
+```
+
+**可复现的验证**（`tests/test_version_gate.py`，9 个用例）：
+
+```bash
+python -m pytest tests/test_version_gate.py -v
+```
+
+其中最关键的一条：用 v1 的原话提问，v1 也一条都检不到——
+
+```python
+hits, _ = svc.retrieve("每批抽 8 件 全检通止规", as_of="2026-06-01")
+assert "v1" not in {h["chunk"]["doc_meta"]["version"] for h in hits}
+```
+
+另有两道配套约束：
+
+- **as_of 格式错误直接 40001**，绝不静默按「当前」检索——追溯结论会因此失真；
+- 该时刻没有任何有效文档时返回空结果（`hits=0`）而不是报错，前端提示「无依据」。
+
+---
