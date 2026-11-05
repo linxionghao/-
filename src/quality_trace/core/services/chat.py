@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import json
 import time
@@ -33,6 +34,28 @@ from quality_trace.core.llm.client import (
 )
 from quality_trace.core.repo import db as repo
 from quality_trace.core.services.errors import ApiError, ErrorCode
+
+
+def _valid_as_of(value: str) -> bool:
+    """校验业务时刻格式：YYYY-MM-DD 或完整 ISO 8601（允许 Z 结尾）。
+
+    只做格式校验，不做「是否未来时间」的限制——按历史时刻检索未来标准
+    本身就不该命中（生效区间会过滤掉），报错反而妨碍追溯演练。
+    """
+    raw = str(value or "").strip()
+    if len(raw) < 10:
+        return False
+    try:
+        _dt.date.fromisoformat(raw[:10])
+    except ValueError:
+        return False
+    if len(raw) == 10:
+        return True
+    try:
+        _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
 
 # 引用片段展示长度
 SNIPPET_LEN = 120
@@ -62,18 +85,24 @@ class ChatService:
 
     # ------------------------------------------------------------ 校验
     def validate(self, question: str, session_id: Optional[str],
-                 user_id: str = "") -> Dict:
+                 user_id: str = "", as_of: Optional[str] = None) -> Dict:
         """流开始前的校验：失败抛 ApiError，由入口层转成 HTTP JSON 错误。
 
         user_id 用于会话归属校验（权限矩阵 #3「本人会话」）：
         传了 user_id 且会话不属于该用户时，按「不存在」返回 40401，
         不向他人暴露会话是否存在。
+
+        as_of 用于版本硬闸：必须是 YYYY-MM-DD 或完整 ISO 时刻，
+        格式错误直接 40001——宁可报错，也不要静默按「当前」检索。
         """
         if not question or not question.strip():
             raise ApiError(ErrorCode.BAD_REQUEST)
         max_len = int(self.chat_cfg.get("question_max_chars", 1000))
         if len(question.strip()) > max_len:
             raise ApiError(ErrorCode.QUESTION_TOO_LONG)
+        if as_of is not None and not _valid_as_of(as_of):
+            raise ApiError(ErrorCode.BAD_REQUEST,
+                           "as_of 格式应为 YYYY-MM-DD 或 ISO 8601 时刻")
 
         # 限流：单会话每分钟消息数
         per_min = int(self.chat_cfg.get("rate_limit_per_min", 20))
@@ -162,12 +191,42 @@ class ChatService:
 
         return _embed
 
-    def retrieve(self, question: str) -> Tuple[List[Dict], Dict]:
-        """混合检索，返回 (命中项列表, 运行元信息)。"""
+    def retrieve(self, question: str, as_of: Optional[str] = None
+                 ) -> Tuple[List[Dict], Dict]:
+        """混合检索，返回 (命中项列表, 运行元信息)。
+
+        as_of（业务时刻，YYYY-MM-DD 或完整 ISO）非空时启用**版本硬闸**：
+        切片直接从数据库按「当时有效」筛选（SQL 层过滤），再用 BM25 检索，
+        不再读索引文件——索引是派生物，无法保证版本语义。
+        此时向量通道不参与（切片集合与向量矩阵不再对齐），meta 会如实标注。
+        """
+        if as_of:
+            chunks = repo.list_chunks_as_of(self.conn, as_of)
+            if not chunks:
+                # 该时刻没有有效文档：返回空结果而非报错，前端提示「无依据」
+                return [], {"mode": "bm25_as_of", "degraded": False,
+                            "as_of": as_of, "version_gate": "sql",
+                            "hits": 0}
+            bm25 = kb_retrieval.BM25Index(
+                [kb_retrieval.tokenize(c["content"]) for c in chunks]
+            )
+            ranked, meta = kb_retrieval.hybrid_search(
+                question, bm25, None, None, self.ret_cfg
+            )
+            meta.update({"as_of": as_of, "version_gate": "sql"})
+            return (
+                [
+                    {"rank": pos, "rrf": score, "chunk": chunks[idx]}
+                    for pos, (idx, score) in enumerate(ranked, start=1)
+                ],
+                meta,
+            )
+
         chunks, bm25, vectors = self._load_index()
         ranked, meta = kb_retrieval.hybrid_search(
             question, bm25, vectors, self._make_embedder(), self.ret_cfg
         )
+        meta.setdefault("version_gate", "index")
         return (
             [
                 {"rank": pos, "rrf": score, "chunk": chunks[idx]}
@@ -200,7 +259,8 @@ class ChatService:
 
     # ------------------------------------------------------------ 主流程
     def stream_answer(
-        self, question: str, session_id: Optional[str], user_id: str, role: str
+        self, question: str, session_id: Optional[str], user_id: str, role: str,
+        as_of: Optional[str] = None,
     ) -> Iterator[Dict]:
         """流式问答：产出事件流（生成器）。入口层负责格式化为 SSE。
 
@@ -231,7 +291,7 @@ class ChatService:
 
         degraded: Optional[Dict] = None
         try:
-            retrieved, meta = self.retrieve(question)
+            retrieved, meta = self.retrieve(question, as_of)
         except ApiError as exc:                      # 索引类错误：流中只能发 error 事件
             yield {"event": "error", "data": {"code": exc.code, "message": exc.message}}
             return

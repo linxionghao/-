@@ -46,6 +46,11 @@ class ChatRequest(BaseModel):
 
     session_id: Optional[str] = Field(default=None, description="为空则自动创建")
     question: str = Field(min_length=1, max_length=2000, description="用户问题")
+    as_of: Optional[str] = Field(
+        default=None,
+        description="业务时刻（YYYY-MM-DD 或 ISO 8601）：按该时刻生效的标准检索，"
+                    "用于追溯历史批次当时的判定依据",
+    )
 
 
 # ================================================================ 响应模型

@@ -80,7 +80,8 @@ async def chat(
 
     # ---- 流前校验（参数 / 限流 / 会话归属 / 并发），失败直接返回 JSON 错误 ----
     try:
-        service.validate(question, body.session_id, user_id=user["user_id"])
+        service.validate(question, body.session_id, user_id=user["user_id"],
+                        as_of=body.as_of)
     except Exception as exc:  # noqa: BLE001
         code = getattr(exc, "code", ErrorCode.INTERNAL_ERROR)
         message = getattr(exc, "message", "服务内部错误，请稍后重试")
@@ -90,7 +91,8 @@ async def chat(
     def _producer(out: "queue.Queue") -> None:
         try:
             for event in service.stream_answer(
-                question, body.session_id, user["user_id"], user["role"]
+                question, body.session_id, user["user_id"], user["role"],
+                as_of=body.as_of,
             ):
                 out.put(format_sse(event["event"], event["data"]))
         except Exception as exc:  # noqa: BLE001 —— 兜底：流中任何异常都成 error 事件
