@@ -4,9 +4,10 @@
 
 一个不良品单进去，四样东西出来：**关联对象、疑似原因排序、影响范围清单、8D 草稿**。
 
-[![tests](https://img.shields.io/badge/tests-183%20passed-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-189%20passed-brightgreen)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)]()
 [![fastapi](https://img.shields.io/badge/FastAPI-async-009688)]()
+[![ci](https://img.shields.io/badge/ci-py3.9%20%7C%203.11-informational)]()
 
 ---
 
@@ -652,6 +653,24 @@ python scripts/ui_check_pages.py 8000
 ```
 
 四项全绿，即证明「鉴权 → 检索 → 问答 → 审计 → 审批 → 录入」主链路完整可用。
+
+---
+
+## 文档索引
+
+想深入了解某一层，直接跳对应文档（都在 `docs/` 下）：
+
+| 文档 | 讲什么 | 什么时候看 |
+|---|---|---|
+| [`requirements.md`](docs/requirements.md) | 需求基线：7 个实体、8 条验收标准、归因 L1–L4 | 想知道"要做什么" |
+| [`architecture.md`](docs/architecture.md) | 五层架构、12 张表的设计起点、两个陷阱的机制设计 | 想知道"为什么这么分层" |
+| [`data-model.md`](docs/data-model.md) | 12 张表逐表说明、双时间戳、索引与迁移、常用查询手册 | 想读/改数据库 |
+| [`api.md`](docs/api.md) | 完整 HTTP 规范：响应包、28 个错误码、SSE 事件、全部接口 | 想对接接口 |
+| [`permissions.md`](docs/permissions.md) | 三角色边界、三层防线、31 个接口的权限矩阵 | 想知道"谁能看什么" |
+| [`stage3-design.md`](docs/stage3-design.md) | 阶段 3 的批次拆分、决策记录（ADR 摘要）、权限矩阵初稿 | 想了解取舍过程 |
+| [`chat-api.md`](docs/chat-api.md) | 问答接口的单独设计稿（SSE 时序、降级语义） | 只关心问答链路 |
+| [`discovery-report.md`](docs/discovery-report.md) | 同行方案调研（QMS/MES/RAG 落地） | 想知道"别人怎么做" |
+| [`screenshots/`](docs/screenshots/) | 7 张真实页面截图（三端入口 + 巡检留证） | 不想跑代码就看效果 |
 
 ---
 
