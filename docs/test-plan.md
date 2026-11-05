@@ -183,3 +183,37 @@ CI（`.github/workflows/ci.yml`）只跑第 1 步 + 编译门禁，因为第 2�
 
 1. **移动端巡检仍有一条资源 404 告警**。两个页面都已加 `<link rel="icon" href="data:,">`，服务端访问日志里也查不到 404 记录，判断是 Chrome 对空白页/新标签的默认图标请求，与业务流程无关；保留在报告里而不是从脚本里屏蔽掉——把告警藏起来比留着它更危险。
 2. **冒烟脚本必须打到"启动命令正确"的服务上**。第一次在 8012 端口尝试时出现 `upstream connect failed (os error 10061)`，原因是启动命令缺 `PYTHONPATH=src`（`ModuleNotFoundError: quality_trace`），进程直接退出、端口无人监听。这类失败会被脚本如实报成 14 项全挂，而不是"静默变成 0 项"——这也说明"断言数会随服务存活情况变化"本身就是一个有效的健康信号。
+
+---
+
+## 8. 覆盖率现状（验收标准 #7）
+
+需求要求 `core/` 行覆盖率 ≥ 70%。实测：
+
+| 范围 | 覆盖率 | 说明 |
+|---|---|---|
+| `src/quality_trace/core`（含 services / repo / knowledge / llm） | **88%** | 验收对象，达标 |
+| `src/quality_trace`（含 api 路由层） | **80%** | 补上 `test_api_routes.py` 后从 64% 提到 80% |
+
+逐模块看，低覆盖的都是"分支多但在课程范围内用不到"的地方，不是"忘了测"：
+
+| 模块 | 覆盖率 | 未覆盖的是哪些行 |
+|---|---|---|
+| `core/services/attribution.py` | 100% | —— |
+| `core/services/audit.py` | 100% | —— |
+| `core/services/errors.py` | 100% | —— |
+| `core/repo/db.py` | 92% | 少量防御性分支（坏 JSON、空结果拼装） |
+| `core/services/defects.py` | 93% | 同上 |
+| `core/services/auth.py` | 95% | 令牌缺字段的异常分支 |
+| `core/knowledge/retrieval.py` | 88% | `faiss` 专用路径（本机未装，走 numpy 分支） |
+| `core/services/chat.py` | 81% | 流式生成的真实网络异常路径 |
+| `core/services/photo.py` | 81% | 目录创建失败的 OS 异常 |
+| `core/llm/client.py` | 47% | HTTP 重试/超时分支需要 mock requests 的全部异常族，收益低于成本 |
+
+这样安排的理由：覆盖率是"有没有测"的下界指标，不是目标本身。为了把 `llm/client.py` 从 47% 推到 90%，需要给 `requests` 写 6 种异常的 mock，而这些 mock 一旦与真实 `requests` 行为漂移，反而制造"测过了但线上仍挂"的假安全感。真正的保护是调用方统一捕获 `LLMUnavailable` 并降级——这条路径由 `chat.py`（81%）和 `normalize.py`（85%）覆盖。
+
+命令：
+
+```bash
+python -m pytest -o addopts="" -q --cov=src/quality_trace/core --cov-report=term
+```
