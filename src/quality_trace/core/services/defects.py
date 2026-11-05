@@ -121,6 +121,7 @@ def create_draft(
     conn, *, user: Dict[str, Any], work_order_id: str, description: str,
     op_code: str = "", qty: int = 1, severity: str = "一般",
     occurred_at: Optional[str] = None, photo: Optional[str] = None,
+    photo_token: Optional[str] = None,
     client_draft_id: Optional[str] = None, declared_backfill: bool = False,
     llm_cfg: Optional[Dict] = None, api_key: str = "",
     upload_dir: str = "data/uploads",
@@ -168,6 +169,10 @@ def create_draft(
 
     # ---- 4) 照片先校验后建单：坏图不该留下一条无照片的脏单 ----
     blob_ext = photo_service.decode_photo(photo) if photo else None
+    # 预上传 token（#29）与内联 base64 二选一；token 失效同样在建单前拦下
+    if not blob_ext and photo_token:
+        if photo_service.resolve_temp(photo_token, Path(upload_dir)) is None:
+            raise ApiError(ErrorCode.PHOTO_INVALID)
 
     # ---- 5) 双时间戳与补录标记 ----
     occurred = parse_occurred_at(occurred_at)
@@ -200,6 +205,11 @@ def create_draft(
     if blob_ext:
         blob, ext = blob_ext
         path = photo_service.save_photo(blob, ext, defect_no, Path(upload_dir))
+        repo.set_defect_photo(conn, defect_no, path)
+        row = repo.get_defect(conn, defect_no) or row
+    elif photo_token:
+        path = photo_service.move_temp_to_defect(photo_token, defect_no,
+                                                 Path(upload_dir))
         repo.set_defect_photo(conn, defect_no, path)
         row = repo.get_defect(conn, defect_no) or row
 

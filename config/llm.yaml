@@ -47,3 +47,11 @@ chat:
   stream_timeout_s: 60              # 流式生成超时（截断而非失败）
   rate_limit_per_min: 20            # 单会话每分钟消息数上限
   title_max_len: 20                 # 会话标题取首条问题前 N 字
+
+defect:
+  # ---- 班组长现场录入（docs/stage3-design.md 第 5 节）----
+  upload_dir: data/uploads          # 照片存储根目录（tmp/ 暂存，photos/ 正式）
+  max_photo_mb: 2                   # 单张照片上限（与错误码 40003 文案一致）
+  backfill_threshold_s: 60          # 录入比发生晚超过该秒数 → 自动打「补录」标
+  list_limit: 50                    # 列表默认返回条数
+  description_min_chars: 4          # 描述最短长度（太短无法归一化）

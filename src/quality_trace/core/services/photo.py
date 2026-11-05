@@ -18,8 +18,9 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+import uuid
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from quality_trace.core.services.errors import ApiError, ErrorCode
 
@@ -89,3 +90,49 @@ def attach_photo(
     path = save_photo(blob, ext, defect_no, Path(upload_dir))
     repo.set_defect_photo(conn, defect_no, path)
     return path
+
+
+# ---------------------------------------------------------------------------
+# 预上传（权限矩阵 #29）：先传图拿 token，再随建单请求引用，避免建单包体过大
+# ---------------------------------------------------------------------------
+_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def save_temp(blob: bytes, ext: str, upload_dir: Path) -> str:
+    """把校验过的图片存入临时区，返回 32 位 hex token（不可猜测、不含路径）。"""
+    tmp_dir = Path(upload_dir) / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    (tmp_dir / f"{token}.{ext}").write_bytes(blob)
+    return token
+
+
+def resolve_temp(token: str, upload_dir: Path) -> Optional[Path]:
+    """token → 临时文件路径；非法 token 或文件不存在返回 None。
+
+    token 用严格正则校验，确保拼进文件名的只有 hex 字符——即使调用方
+    传了 `../../etc/passwd` 也无法穿越目录。
+    """
+    token = (token or "").strip()
+    if not _TOKEN_RE.match(token):
+        return None
+    tmp_dir = Path(upload_dir) / "tmp"
+    for ext in ("jpg", "png"):
+        candidate = tmp_dir / f"{token}.{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def move_temp_to_defect(
+    token: str, defect_no: str, upload_dir: Path,
+) -> str:
+    """把预上传的图片移动到正式目录，返回相对路径；token 失效抛 40003。"""
+    source = resolve_temp(token, upload_dir)
+    if source is None:
+        raise ApiError(ErrorCode.PHOTO_INVALID)
+    month_dir = Path(upload_dir) / "photos" / defect_no[:10].replace("-", "")[:6]
+    month_dir.mkdir(parents=True, exist_ok=True)
+    target = month_dir / f"{defect_no}{source.suffix}"
+    source.replace(target)
+    return str(target).replace("\\", "/")
