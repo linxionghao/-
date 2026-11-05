@@ -317,3 +317,27 @@ async def analytics_page(request: Request):
         "default_to": today.isoformat(),
     }
     return templates.TemplateResponse(request=request, name="analytics.html", context=ctx)
+
+
+# ================================================================ 批次追溯
+@router.get("/genealogy")
+async def genealogy_page(request: Request):
+    """批次谱系页（正查 / 反查 / 供应商记分卡）。
+
+    页面只出骨架，数据走 /api/v1/genealogy/*：
+    三个 tab 之间是"换数据不换页面"的关系，做成整页刷新会丢掉当前选中的批次。
+    """
+    user = _page_user(request)
+    if user is None:
+        return RedirectResponse("/admin/login", status_code=303)
+    if user["role"] not in ("quality_manager", "quality_engineer"):
+        return HTMLResponse(
+            templates.get_template("forbidden.html").render(
+                {"request": request, "user": user}
+            ),
+            status_code=403,
+        )
+    return templates.TemplateResponse(
+        request=request, name="genealogy.html",
+        context={"request": request, "user": user},
+    )

@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+{% block title %}批次追溯{% endblock %}
+{% block nav_genealogy %}on{% endblock %}
+
+{% block content %}
+<h1>批次谱系追溯</h1>
+
+<div class="grid" id="ov" style="grid-template-columns: repeat(4, 1fr); margin-bottom:18px"></div>
+
+<div class="card">
+  <div class="tabs">
+    <button class="tab on" data-tab="forward">正查：这批料 → 哪些工单</button>
+    <button class="tab" data-tab="backward">反查：这单不良 → 哪批料</button>
+    <button class="tab" data-tab="supplier">供应商记分卡</button>
+  </div>
+
+  <!-- ============ 正查 ============ -->
+  <div class="pane" id="pane-forward">
+    <form class="inline" onsubmit="return false;">
+      <div style="flex:1">
+        <label for="f-lot">选择物料批</label>
+        <select id="f-lot" style="width:100%"></select>
+      </div>
+      <button class="btn" id="btn-forward">追溯</button>
+    </form>
+    <div id="forward-out" style="margin-top:16px"></div>
+  </div>
+
+  <!-- ============ 反查 ============ -->
+  <div class="pane" id="pane-backward" style="display:none">
+    <form class="inline" onsubmit="return false;">
+      <div style="flex:1">
+        <label for="f-defect">不良单号</label>
+        <input id="f-defect" placeholder="如 DF-20261105-0011" style="width:100%">
+      </div>
+      <button class="btn" id="btn-backward">反查来源</button>
+    </form>
+    <div id="backward-out" style="margin-top:16px"></div>
+  </div>
+
+  <!-- ============ 供应商 ============ -->
+  <div class="pane" id="pane-supplier" style="display:none">
+    <p class="muted" id="sc-note"></p>
+    <div id="sc-out"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="font-size:15px;margin-bottom:12px">最近的物料批</h2>
+  <div id="recent"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .tabs { display: flex; gap: 6px; border-bottom: 1px solid #e6e9ef; margin-bottom: 16px; }
+  .tab { background: none; border: 0; padding: 10px 14px; font-size: 13px; cursor: pointer;
+         color: #6b7787; border-bottom: 2px solid transparent; }
+  .tab.on { color: #2f6fed; border-bottom-color: #2f6fed; font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; }
+  .badge.high { background: #fdecec; color: #b0343c; }
+  .badge.mid { background: #fdf3e3; color: #a06a10; }
+  .badge.low { background: #e7f6e9; color: #217a37; }
+  .concl { background: #f8fafc; border-left: 3px solid #2f6fed; padding: 12px 16px;
+           border-radius: 4px; font-size: 13px; line-height: 1.7; margin: 12px 0; }
+  .concl.warn { border-color: #a06a10; background: #fdf9ef; }
+  .concl.bad { border-color: #b0343c; background: #fdf2f2; }
+  .graph { width: 100%; height: 300px; background: #fbfcfe; border-radius: 6px; }
+  table.mini { font-size: 12px; }
+  table.mini th, table.mini td { padding: 7px 9px; }
+  .rank1 { color: #b0343c; font-weight: bold; }
+  .caveat { font-size: 12px; color: #8a94a3; margin-top: 10px; line-height: 1.6; }
+</style>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s === null || s === undefined ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const fmt = (v, d) => (v === null || v === undefined ? '—' : Number(v).toFixed(d === undefined ? 2 : d));
+const pct = (v, d) => (v === null || v === undefined ? '—' : (v * 100).toFixed(d === undefined ? 2 : d) + '%');
+
+async function api(path) {
+  const res = await fetch(path, { credentials: 'same-origin' });
+  const body = await res.json();
+  if (body.code !== 0) throw new Error(body.message || '请求失败');
+  return body.data;
+}
+
+/* ------------------------------------------------------------------ 概览 */
+async function loadOverview() {
+  const d = await api('/api/v1/genealogy/overview');
+  const cards = [
+    { num: d.lots, lbl: '物料批', sub: '已登记批次总数' },
+    { num: d.suppliers, lbl: '供应商', sub: '有批次记录的供应商' },
+    { num: pct(d.coverage, 0), lbl: '批次覆盖率', sub: d.orders_with_lot + ' / ' + d.orders + ' 张工单有领料登记',
+      cls: d.coverage < 0.6 ? 'bad' : '' },
+    { num: d.top_suppliers.length ? d.top_suppliers[0].supplier : '—', lbl: 'PPM 最高供应商',
+      sub: d.top_suppliers.length ? fmt(d.top_suppliers[0].ppm, 0) + ' PPM' : '暂无' },
+  ];
+  $('#ov').innerHTML = cards.map(c =>
+    `<div class="stat"><div class="num ${c.cls || ''}" style="font-size:${String(c.num).length > 6 ? 16 : 26}px">${esc(c.num)}</div>
+     <div class="lbl">${c.lbl}</div><div class="sub" style="font-size:11px;color:#98a2b3">${esc(c.sub)}</div></div>`
+  ).join('');
+
+  const recent = d.recent_lots || [];
+  $('#recent').innerHTML = recent.length ? table(
+    ['批号', '物料', '供应商', '供应商批号', '数量', '状态', '时间'],
+    recent.map(l => [
+      `<code>${esc(l.lot_id)}</code>`, esc(l.material_name), esc(l.supplier),
+      esc(l.supplier_lot), fmt(l.qty, 0) + ' ' + esc(l.unit), esc(l.status),
+      esc(String(l.occurred_at).slice(0, 10)),
+    ])
+  ) : '<p class="muted">暂无批次，先在上方"正查"里登记，或运行种子脚本。</p>';
+}
+
+function table(headers, rows) {
+  return '<table class="mini"><thead><tr>' + headers.map(h => `<th>${h}</th>`).join('')
+    + '</tr></thead><tbody>'
+    + rows.map(r => '<tr>' + r.map(c => `<td>${c}</td>`).join('') + '</tr>').join('')
+    + '</tbody></table>';
+}
+
+/* ------------------------------------------------------------------ 正查 */
+async function loadLots() {
+  const d = await api('/api/v1/genealogy/lots?limit=200');
+  const sel = $('#f-lot');
+  sel.innerHTML = (d.lots || []).map(l =>
+    `<option value="${esc(l.lot_id)}">${esc(l.lot_id)} · ${esc(l.material_name)} · ${esc(l.supplier || '未知供应商')}</option>`
+  ).join('') || '<option value="">（暂无批次）</option>';
+}
+
+async function doForward() {
+  const lot = $('#f-lot').value;
+  if (!lot) { $('#forward-out').innerHTML = '<p class="muted">没有可追溯的批次。</p>'; return; }
+  const d = await api('/api/v1/genealogy/lots/' + encodeURIComponent(lot));
+
+  const lv = d.impact.level;
+  const cls = lv === '高' ? 'bad' : (lv === '中' ? 'warn' : '');
+  const badge = lv === '高' ? 'high' : (lv === '中' ? 'mid' : 'low');
+
+  let html = `<div class="concl ${cls}">
+      <b>影响面：<span class="badge ${badge}">${esc(lv)}</span></b>
+      ${d.impact.need_recall ? '<span style="color:#b0343c">建议召回</span>' : ''}
+      <div style="margin-top:6px">${esc(d.conclusion)}</div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(4,1fr);margin:14px 0">
+      <div class="stat"><div class="num">${d.summary.orders}</div><div class="lbl">涉及工单</div></div>
+      <div class="stat"><div class="num">${d.summary.produced}</div><div class="lbl">涉及产量</div></div>
+      <div class="stat"><div class="num">${d.summary.defect_pieces}</div><div class="lbl">不良件数</div></div>
+      <div class="stat"><div class="num">${pct(d.summary.defect_rate)}</div><div class="lbl">不良率</div></div>
+    </div>`;
+
+  html += table(
+    ['工单', '产品', '产线', '计划产量', '用量', '不良单数', '不良件数', '不良率'],
+    (d.orders || []).map(o => [
+      `<code>${esc(o.work_order_id)}</code>`, esc(o.product_name), esc(o.line_id),
+      fmt(o.planned_qty, 0), fmt(o.qty_used, 0), o.defect_orders, o.defect_pieces,
+      pct(o.defect_rate),
+    ])
+  );
+
+  html += '<div id="graph" class="graph" style="margin-top:16px"></div>';
+  html += `<p class="caveat">${esc(d.caveat)}</p>`;
+  $('#forward-out').innerHTML = html;
+
+  try {
+    const g = await api('/api/v1/genealogy/lots/' + encodeURIComponent(lot) + '/graph');
+    drawGraph($('#graph'), g);
+  } catch (e) { /* 图画不出来不影响表格结论 */ }
+}
+
+/* 三层布局：批（左）→ 工单（中）→ 不良（右） */
+function drawGraph(host, g) {
+  if (!g.nodes || !g.nodes.length) { host.innerHTML = '<p class="muted">没有可展示的谱系。</p>'; return; }
+  const w = host.clientWidth || 900, h = host.clientHeight || 300;
+  const NS = 'http://www.w3.org/2000/svg';
+  host.innerHTML = '';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('width', '100%'); svg.setAttribute('height', '100%');
+  host.appendChild(svg);
+
+  const cols = { lot: [], order: [], defect: [] };
+  g.nodes.forEach(n => (cols[n.type] || cols.order).push(n));
+  const pos = {};
+  const draw = (list, x) => list.forEach((n, i) => {
+    pos[n.id] = { x: x, y: (h / (list.length + 1)) * (i + 1), node: n };
+  });
+  draw(cols.lot, w * 0.12);
+  draw(cols.order, w * 0.45);
+  draw(cols.defect, w * 0.8);
+
+  g.edges.forEach(e => {
+    const a = pos[e.source], b = pos[e.target];
+    if (!a || !b) return;
+    const line = document.createElementNS(NS, 'path');
+    const mx = (a.x + b.x) / 2;
+    line.setAttribute('d', `M${a.x + 60} ${a.y} C${mx} ${a.y}, ${mx} ${b.y}, ${b.x - 60} ${b.y}`);
+    line.setAttribute('fill', 'none');
+    line.setAttribute('stroke', '#c8d3e4');
+    line.setAttribute('stroke-width', '1.4');
+    svg.appendChild(line);
+  });
+
+  const color = { lot: '#2f6fed', order: '#217a37', defect: '#b0343c' };
+  Object.values(pos).forEach(({ x, y, node }) => {
+    const rect = document.createElementNS(NS, 'rect');
+    const label = String(node.label || node.id).split('\n')[0];
+    const width = Math.min(120, 20 + label.length * 7);
+    rect.setAttribute('x', x - width / 2); rect.setAttribute('y', y - 15);
+    rect.setAttribute('width', width); rect.setAttribute('height', 30);
+    rect.setAttribute('rx', 5);
+    rect.setAttribute('fill', '#fff');
+    rect.setAttribute('stroke', color[node.type] || '#888');
+    rect.setAttribute('stroke-width', '1.5');
+    svg.appendChild(rect);
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', x); t.setAttribute('y', y + 4);
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('font-size', '11');
+    t.setAttribute('fill', '#26303b');
+    t.textContent = label.length > 16 ? label.slice(0, 16) + '…' : label;
+    svg.appendChild(t);
+  });
+
+  const legend = document.createElementNS(NS, 'text');
+  legend.setAttribute('x', 10); legend.setAttribute('y', 16);
+  legend.setAttribute('font-size', '11'); legend.setAttribute('fill', '#8a94a3');
+  legend.textContent = `批 → 工单 → 不良（${g.stats.orders} 单 / ${g.stats.defects} 条不良）`;
+  svg.appendChild(legend);
+}
+
+/* ------------------------------------------------------------------ 反查 */
+async function doBackward() {
+  const no = $('#f-defect').value.trim();
+  if (!no) { $('#backward-out').innerHTML = '<p class="muted">请输入不良单号。</p>'; return; }
+  try {
+    const d = await api('/api/v1/genealogy/defects/' + encodeURIComponent(no) + '/backward');
+    const cov = d.coverage.ok;
+    let html = `<div class="concl ${cov ? '' : 'warn'}">
+      <b>→ 供应商：</b>${d.suppliers.length ? d.suppliers.map(esc).join('、') : '未追溯到'}
+      <div style="margin-top:6px">${esc(d.conclusion)}</div>
+    </div>`;
+
+    html += `<h3 style="font-size:13px;margin:14px 0 8px">不良单</h3>`;
+    html += table(['单号', '描述', '数量', '严重度', '缺陷码', '发生时间'],
+      [[esc(d.defect.defect_no), esc(d.defect.description), d.defect.qty,
+        esc(d.defect.severity), esc(d.defect.defect_code || '未分类'),
+        esc(String(d.defect.occurred_at).slice(0, 16))]]);
+
+    if (d.lots.length) {
+      html += `<h3 style="font-size:13px;margin:16px 0 8px">涉及批次</h3>`;
+      html += table(['批号', '物料', '供应商', '供应商批号', '用量', '状态'],
+        d.lots.map(l => [`<code>${esc(l.lot_id)}</code>`, esc(l.material_name), esc(l.supplier),
+          esc(l.supplier_lot), fmt(l.qty_used, 0), esc(l.status)]));
+
+      html += `<h3 style="font-size:13px;margin:16px 0 8px">嫌疑排序（不良率降序）</h3>`;
+      html += table(['排名', '批号', '供应商', '关联工单', '关联产量', '不良件数', '不良率'],
+        d.suspects.map(s => [
+          s.rank ? `<span class="${s.rank === 1 ? 'rank1' : ''}">${s.rank}</span>` : '—',
+          `<code>${esc(s.lot_id)}</code>`, esc(s.supplier), s.orders, s.produced,
+          s.defect_pieces, pct(s.defect_rate),
+        ]));
+    } else {
+      html += `<div class="warnbox">${esc(d.coverage.reason)}</div>`;
+    }
+    html += `<p class="caveat">${esc(d.caveat)}</p>`;
+    $('#backward-out').innerHTML = html;
+  } catch (e) {
+    $('#backward-out').innerHTML = `<div class="msg err" style="display:block">${esc(e.message)}</div>`;
+  }
+}
+
+/* ------------------------------------------------------------------ 供应商 */
+async function doSupplier() {
+  const d = await api('/api/v1/genealogy/suppliers/scorecard');
+  $('#sc-note').textContent = d.note;
+  if (!d.rows.length) { $('#sc-out').innerHTML = '<p class="muted">暂无供应商数据。</p>'; return; }
+  $('#sc-out').innerHTML = table(
+    ['供应商', '批次', '关联工单', '关联产量', '不良件数', 'PPM', '样本'],
+    d.rows.map(r => [
+      esc(r.supplier), r.lots, r.orders, r.produced, r.defect_pieces, fmt(r.ppm, 0),
+      r.small_sample ? '<span class="muted">样本不足</span>' : '正常',
+    ])
+  );
+}
+
+/* ------------------------------------------------------------------ 交互 */
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    ['forward', 'backward', 'supplier'].forEach(k => {
+      $('#pane-' + k).style.display = (k === btn.dataset.tab) ? '' : 'none';
+    });
+    if (btn.dataset.tab === 'supplier') doSupplier().catch(e => alert(e.message));
+  });
+});
+$('#btn-forward').addEventListener('click', () => doForward().catch(e => alert(e.message)));
+$('#btn-backward').addEventListener('click', doBackward);
+$('#f-lot').addEventListener('change', () => doForward().catch(e => alert(e.message)));
+
+loadOverview().catch(e => console.error(e));
+loadLots().then(() => doForward()).catch(e => console.error(e));
+</script>
+{% endblock %}
