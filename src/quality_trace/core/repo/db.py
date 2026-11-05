@@ -555,6 +555,58 @@ def insert_chunks(conn: sqlite3.Connection, doc_id: str,
     return len(chunks)
 
 
+def list_chunks_as_of(
+    conn: sqlite3.Connection, as_of: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """按业务时刻取「当时有效」的切片（版本失效第一道闸）。
+
+    这是版本有效性的唯一权威判定，直接在 SQL 层完成：
+        status='active' AND effective_from <= as_of <= effective_to
+
+    - as_of 为空 → 退化为「当前全部在架文档」，与索引文件行为一致；
+    - 已下架（archived）的文档整篇不出现，无论相似度多高；
+    - 生效区间为空的旧数据按「永久有效」处理，避免升级后检索突然空白。
+
+    返回结构与 chunks.json 同构，供检索层直接建 BM25，不依赖索引文件。
+    """
+    sql = (
+        "SELECT c.*, d.doc_name, d.doc_type, d.version, d.effective_from,"
+        " d.effective_to, d.doc_id AS _doc_id"
+        " FROM kb_chunk c JOIN kb_doc d ON c.doc_id = d.doc_id"
+        " WHERE d.status = 'active'"
+    )
+    params: List[Any] = []
+    if as_of:
+        day = str(as_of)[:10]
+        sql += (" AND (d.effective_from IS NULL OR d.effective_from = ''"
+                " OR d.effective_from <= ?)")
+        params.append(day)
+        sql += (" AND (d.effective_to IS NULL OR d.effective_to = ''"
+                " OR d.effective_to >= ?)")
+        params.append(day)
+    sql += " ORDER BY d.doc_name, d.version, c.seq_no"
+
+    out: List[Dict[str, Any]] = []
+    for r in conn.execute(sql, params).fetchall():
+        out.append({
+            "chunk_id": r["chunk_id"],
+            "seq_no": r["seq_no"],
+            "source_file": r["doc_name"],
+            "heading": r["clause"] or "",
+            "content": r["content"],
+            "char_len": r["char_len"],
+            "doc_meta": {
+                "doc_id": r["_doc_id"],
+                "doc_type": r["doc_type"],
+                "version": r["version"],
+                "effective_from": r["effective_from"],
+                "effective_to": r["effective_to"],
+                "status": "active",
+            },
+        })
+    return out
+
+
 def list_active_chunks_for_index(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """读全部 active 文档的切片，组装成检索索引所需的 chunks 结构。
 
