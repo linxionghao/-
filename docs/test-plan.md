@@ -3,7 +3,7 @@
 > 一句话：**单测证明逻辑对，冒烟证明链路通，页面巡检证明人能用。** 三者缺一，都只能算"应该没问题"。
 
 ```
-第 1 层  pytest        189 passed / 1 skipped    逻辑正确性（离线、秒级、可进 CI）
+第 1 层  pytest        214 passed / 1 skipped    逻辑正确性（离线、秒级、可进 CI）
 第 2 层  smoke 脚本    14 + 18 项断言            真实 HTTP 链路（起服务后跑，验鉴权/状态码/降级）
 第 3 层  Playwright    2 个脚本 / 9 张截图        真实浏览器操作（原生 JS 与 SSE 只有跑起来才知道）
 ```
@@ -24,7 +24,7 @@
 
 ---
 
-## 2. 第 1 层：pytest（189 passed / 1 skipped）
+## 2. 第 1 层：pytest（214 passed / 1 skipped，整体行覆盖率 80%，core/ 88%）
 
 ```bash
 python -m pytest -q                      # 全量
@@ -49,6 +49,7 @@ python -m pytest -o addopts="" -q        # 想要结尾那行统计（addopts �
 | `test_audit.py` | 31 | 三条审计规则 + 复核 | 无引用且"完成"→ `flag_no_citation`；引用已下架版本 → `flag_stale_version` |
 | `test_attribution.py` | 11 | 审批状态机 + 8D 导出 | 退回必填 note；未批准导出带 DRAFT 横幅；LLM 不可用 → 50002 |
 | `test_defects.py` | 50 | 归一化 / 建单 / 确认 / 越权 / 照片 / 未绑定产线 | 见下 |
+| `test_api_routes.py` | 25 | HTTP 层契约：状态码、响应包、鉴权依赖、字段裁剪、页面可达 | QE 建单 → 403；班组长响应 JSON 里搜不到 `suggest_json` |
 
 唯一被 skip 的一条是"装了 faiss 才跑"的分支（`test_knowledge.py:139`），因为开发机与 CI 都故意不装 `faiss-cpu`——降级路径（numpy 余弦）才是被验证的主路径。
 
@@ -172,7 +173,7 @@ CI（`.github/workflows/ci.yml`）只跑第 1 步 + 编译门禁，因为第 2�
 
 | 命令 | 结果 |
 |---|---|
-| `python -m pytest -o addopts="" -q` | **189 passed, 1 skipped**（跳过的 1 条是"装了 faiss 才跑"，本机与 CI 都未装） |
+| `python -m pytest -o addopts="" -q` | **214 passed, 1 skipped**（跳过的 1 条是"装了 faiss 才跑"，本机与 CI 都未装）；`--cov=src/quality_trace/core` → **88%**，`--cov=src/quality_trace` → **80%** |
 | `bash scripts/smoke_stage3.sh 8013` | **14 通过 / 0 失败** |
 | `bash scripts/smoke_defects.sh 8013` | **18 通过 / 0 失败** |
 | `python scripts/ui_check_pages.py 8011` | 全部页面巡检通过（问答页 + 后台 5 页） |
