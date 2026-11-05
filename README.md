@@ -487,3 +487,76 @@ python scripts/ui_check_pages.py 8000    # 聊天页 + 后台五页
 ```
 
 ---
+
+## 10. 工程约定与目录结构
+
+### 10.1 目录
+
+```
+quality-trace/
+├── config/
+│   └── llm.yaml                  # LLM / embedding / 检索 / chat / defect / auth 配置
+├── data/
+│   ├── knowledge/                # 示例语料（检验标准 + 8D 案例）
+│   ├── phase1_index/chunks.json  # 切片索引（派生物，随传随重建）
+│   ├── uploads/                  # 文档与照片（运行时生成，不入库）
+│   └── trace.db                  # SQLite（运行时生成，seed 可重建）
+├── docs/
+│   ├── requirements.md           # 需求基线
+│   ├── architecture.md           # 五层架构与两个陷阱的应对
+│   ├── design.md / api.md        # 设计取舍 / 接口规范
+│   ├── chat-api.md               # 问答接口设计（SSE/错误码/降级）
+│   ├── stage3-design.md          # 权限矩阵与双端界面设计
+│   └── screenshots/              # 页面巡检留证
+├── examples/
+│   └── phase1_rag_demo.py        # 阶段 1 单脚本 RAG 原型（薄 CLI）
+├── scripts/
+│   ├── seed_demo_data.py         # 幂等种子数据
+│   ├── run_server.sh / .ps1      # 一键起服务（先重建索引）
+│   ├── smoke_stage3.sh           # 审计/审批接口冒烟
+│   ├── smoke_defects.sh          # 录入端接口冒烟
+│   └── ui_check*.py              # 真实浏览器巡检
+├── src/quality_trace/
+│   ├── api/                      # 入口层：app / deps / sse / routers
+│   ├── core/
+│   │   ├── knowledge/            # 切片 / 检索 / 提示词
+│   │   ├── llm/                  # 供应商适配
+│   │   ├── repo/                 # SQLite 读写
+│   │   └── services/             # 用例编排（7 个服务）
+│   ├── utils/config.py           # 配置加载（YAML + 环境变量）
+│   └── web/                      # chat.html / mobile.html / admin/*.html
+├── tests/                        # 与 src 镜像
+├── pyproject.toml
+└── requirements.txt
+```
+
+### 10.2 编码约定
+
+- **core 层三条禁令**：不 `print`、不读 `os.environ`、不 `import argparse`；
+  Key 与路径由入口层读好后传参，core 保持纯函数、可单测；
+- **依赖注入优先**：向量化函数、LLM Key 都以参数传入，检索层不判断供应商可用性；
+- **中文注释解释「为什么」**，不解释「是什么」；每个模块头写清职责边界与降级行为；
+- **错误码常量集中**在 `core/services/errors.py`，文案表与之同源，禁止散落硬编码；
+- **测试与源码镜像**：`tests/test_<module>.py` 对应 `src/.../<module>.py`。
+
+### 10.3 配置优先级
+
+```
+内置默认值  <  config/llm.yaml  <  环境变量 QT_<SECTION>__<KEY>
+```
+
+例：`QT_LLM__MODEL=xxx`、`QT_AUTH__SECRET=xxx`、`QT_EMBEDDING__ENABLED=true`。
+密钥只从环境变量读，`config/local.yaml` 与 `.env*` 已被 `.gitignore` 排除。
+
+### 10.4 提交约定
+
+采用 `type(scope): 主题` 的 Conventional Commits 风格，正文写「改了什么、为什么」：
+
+```
+feat(defects): 两步落库主流程（建 draft + 人工确认转 pending）
+test(audit): 审计列表四维筛选与核查闭环
+docs(readme): 详解版本失效三道闸
+chore(repo): 新增 .gitignore 并清理误跟踪的缓存
+```
+
+---
