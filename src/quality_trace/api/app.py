@@ -67,6 +67,11 @@ def create_app() -> FastAPI:
         """单页聊天界面。"""
         return FileResponse(WEB_DIR / "chat.html")
 
+    @app.get("/m", include_in_schema=False)
+    async def mobile() -> FileResponse:
+        """班组长现场录入端（移动优先单页，登录在页面内完成）。"""
+        return FileResponse(WEB_DIR / "mobile.html")
+
     return app
 
 

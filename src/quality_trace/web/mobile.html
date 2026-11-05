@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- 移动优先：禁止缩放，保证大按钮在车间戴手套也能点中 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>现场缺陷录入 · quality-trace</title>
+<style>
+  /* 设计取向：高对比、大字号、大触控区（最小 44px），弱光车间也能看清 */
+  :root{
+    --bg:#f4f6f9; --card:#ffffff; --ink:#1a2233; --muted:#6b7688;
+    --brand:#1f6feb; --brand-dark:#1558c0; --warn:#b45309; --warn-bg:#fef3c7;
+    --danger:#c0392b; --ok:#0f766e; --line:#e3e8ef; --radius:14px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:16px; line-height:1.5;}
+  body{padding-bottom:32px;}
+  .wrap{max-width:520px; margin:0 auto; padding:12px;}
+  /* ---------- 顶栏 ---------- */
+  .topbar{position:sticky; top:0; z-index:20; background:var(--brand); color:#fff;
+    padding:10px 14px; display:flex; align-items:center; gap:10px;
+    box-shadow:0 2px 8px rgba(16,24,40,.12);}
+  .topbar h1{font-size:17px; margin:0; font-weight:600; flex:1;}
+  .queue-badge{background:rgba(255,255,255,.2); border:1px solid rgba(255,255,255,.45);
+    color:#fff; border-radius:999px; padding:5px 11px; font-size:13px; cursor:pointer;}
+  .queue-badge.hot{background:#fff; color:var(--warn); font-weight:700;}
+  /* ---------- 步骤条 ---------- */
+  .steps{display:flex; gap:6px; margin:12px 0 14px;}
+  .steps .s{flex:1; text-align:center; font-size:12px; color:var(--muted);
+    padding:8px 4px; background:#e9edf4; border-radius:10px; transition:.2s;}
+  .steps .s.on{background:var(--brand); color:#fff; font-weight:600;}
+  .steps .s.done{background:#d1fae5; color:#065f46;}
+  /* ---------- 卡片与表单 ---------- */
+  .card{background:var(--card); border-radius:var(--radius); padding:16px;
+    margin-bottom:12px; box-shadow:0 1px 3px rgba(16,24,40,.08);}
+  .card h2{font-size:15px; margin:0 0 12px; font-weight:600;}
+  .field{margin-bottom:16px;}
+  .field > label{display:block; font-size:13px; color:var(--muted); margin-bottom:6px;}
+  input[type=text], input[type=password], textarea, input[type=number]{
+    width:100%; border:1.5px solid var(--line); border-radius:12px; padding:14px;
+    font-size:16px; font-family:inherit; background:#fff; color:var(--ink); outline:none;}
+  input:focus, textarea:focus{border-color:var(--brand); box-shadow:0 0 0 3px rgba(31,111,235,.12);}
+  textarea{min-height:96px; resize:vertical;}
+  .hint{font-size:12px; color:var(--muted); margin-top:6px;}
+  .err-text{font-size:12px; color:var(--danger); margin-top:6px; display:none;}
+  .err-text.show{display:block;}
+  /* ---------- 大按钮组 ---------- */
+  .chips{display:flex; flex-wrap:wrap; gap:8px;}
+  .chip{border:1.5px solid var(--line); background:#fff; color:var(--ink);
+    border-radius:12px; padding:12px 14px; font-size:15px; cursor:pointer; min-height:48px;}
+  .chip.on{border-color:var(--brand); background:#e8f0fe; color:var(--brand-dark); font-weight:600;}
+  .chip.wide{flex:1 1 100%; text-align:center;}
+  /* ---------- 数量 stepper ---------- */
+  .stepper{display:flex; align-items:center; gap:10px;}
+  .stepper button{width:56px; height:56px; font-size:26px; border-radius:12px;
+    border:1.5px solid var(--line); background:#fff; color:var(--ink); cursor:pointer;}
+  .stepper input{flex:1; text-align:center; font-size:22px; font-weight:700;}
+  /* ---------- 主按钮 ---------- */
+  .btn{width:100%; border:none; border-radius:14px; padding:17px; font-size:17px;
+    font-weight:600; cursor:pointer; background:var(--brand); color:#fff; min-height:56px;}
+  .btn:active{background:var(--brand-dark);}
+  .btn:disabled{opacity:.55;}
+  .btn.ghost{background:#fff; color:var(--brand); border:1.5px solid var(--brand);}
+  .btn.danger-ghost{background:#fff; color:var(--danger); border:1.5px solid #f3c6c1;}
+  /* ---------- 状态条 ---------- */
+  .banner{border-radius:12px; padding:11px 13px; font-size:13.5px; margin-bottom:12px;}
+  .banner.warn{background:var(--warn-bg); color:var(--warn); border:1px solid #fde68a;}
+  .banner.err{background:#fdecea; color:var(--danger); border:1px solid #f5c6c0;}
+  .banner.info{background:#e8f0fe; color:var(--brand-dark); border:1px solid #c7dbfb;}
+  .hidden{display:none !important;}
+  /* ---------- 登录遮罩 ---------- */
+  .login-mask{position:fixed; inset:0; background:rgba(16,24,40,.55); z-index:50;
+    display:flex; align-items:center; justify-content:center; padding:20px;}
+  .login-box{background:#fff; border-radius:18px; padding:22px; width:100%; max-width:380px;}
+  .login-box h2{margin:0 0 6px; font-size:19px;}
+  .login-box p{margin:0 0 16px; color:var(--muted); font-size:13px;}
+  /* ---------- 回执 ---------- */
+  .receipt{text-align:center; padding:22px 16px;}
+  .receipt .no{font-size:30px; font-weight:800; letter-spacing:1px; color:var(--ok);}
+  .receipt .sub{color:var(--muted); font-size:13px; margin-top:6px;}
+  .badge-backfill{display:inline-block; margin-top:10px; background:var(--warn-bg);
+    color:var(--warn); border:1px solid #fde68a; border-radius:999px;
+    padding:5px 12px; font-size:12.5px; font-weight:600;}
+  /* ---------- 列表 ---------- */
+  .list-item{display:flex; justify-content:space-between; gap:10px; padding:12px 0;
+    border-bottom:1px solid var(--line); font-size:13.5px;}
+  .list-item:last-child{border-bottom:none;}
+  .list-item .meta{color:var(--muted); font-size:12px;}
+  .tag{font-size:11.5px; border-radius:6px; padding:2px 7px; background:#eef2f7; color:var(--muted);}
+  .tag.pending{background:#e8f0fe; color:var(--brand-dark);}
+  .tag.draft{background:#fff7e6; color:var(--warn);}
+  .tag.backfill{background:var(--warn-bg); color:var(--warn);}
+</style>
+</head>
+<body>
+
+<!-- ============ 顶栏：标题 + 离线队列角标 ============ -->
+<div class="topbar">
+  <h1>现场缺陷录入</h1>
+  <button class="queue-badge" id="queue-badge" onclick="showQueue()">0 条待补传</button>
+</div>
+
+<div class="wrap">
+  <!-- ============ 步骤条 ============ -->
+  <div class="steps">
+    <div class="s on" id="step1-tab">① 填写</div>
+    <div class="s" id="step2-tab">② 确认缺陷码</div>
+    <div class="s" id="step3-tab">③ 提交完成</div>
+  </div>
+
+  <!-- 全局提示条（离线 / 错误 / 降级） -->
+  <div id="banner" class="banner hidden"></div>
+
+  <!-- ============ 第 1 步：填单 ============ -->
+  <section id="step1">
+    <div class="card">
+      <h2>工单与工序</h2>
+      <div class="field">
+        <label for="work-order">工单号</label>
+        <input type="text" id="work-order" placeholder="扫码或手输，如 WO-20261030-001"
+               autocomplete="off" inputmode="text">
+        <div class="hint" id="wo-hint">联网时失焦自动校验工单是否存在</div>
+        <div class="err-text" id="wo-err"></div>
+      </div>
+      <div class="field">
+        <label>工序码</label>
+        <div class="chips" id="op-chips"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>缺陷描述</h2>
+      <div class="field">
+        <textarea id="description" maxlength="500"
+          placeholder="写清看到的现象，例如：螺纹外径偏小，通止规止端过不去"></textarea>
+        <div class="hint"><span id="desc-count">0</span>/500 · 描述越具体，候选缺陷码越准</div>
+        <div class="err-text" id="desc-err"></div>
+      </div>
+      <div class="field">
+        <label>不良数量</label>
+        <div class="stepper">
+          <button type="button" onclick="bumpQty(-1)">−</button>
+          <input type="number" id="qty" value="1" min="1" max="99999" inputmode="numeric">
+          <button type="button" onclick="bumpQty(1)">+</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>严重度</label>
+        <div class="chips" id="sev-chips">
+          <button type="button" class="chip" data-sev="轻微">轻微</button>
+          <button type="button" class="chip on" data-sev="一般">一般</button>
+          <button type="button" class="chip" data-sev="严重">严重</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>现场照片（可选）</h2>
+      <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
+      <button type="button" class="btn ghost" onclick="document.getElementById('photo-input').click()">
+        📷 拍照 / 选择照片
+      </button>
+      <div class="hint">拍照后自动压缩到最长边 1280、约 200KB，弱网也能传</div>
+      <div id="photo-preview" class="hidden" style="margin-top:12px;">
+        <img id="photo-img" alt="现场照片预览" style="width:100%; border-radius:12px;">
+        <button type="button" class="btn danger-ghost" style="margin-top:8px"
+                onclick="clearPhoto()">删除照片</button>
+      </div>
+    </div>
+
+    <button class="btn" id="btn-submit" onclick="submitDefect()">提交并获取候选缺陷码</button>
+    <div class="hint" style="text-align:center; margin-top:10px">
+      提交后仍是「待确认」，需你亲手确认缺陷码才正式上报
+    </div>
+  </section>
+
+  <!-- ============ 第 2 步：确认缺陷码（JS 渲染） ============ -->
+  <section id="step2" class="hidden">
+    <div class="card">
+      <h2>请选择最接近的缺陷码</h2>
+      <div class="hint" style="margin-bottom:12px">
+        系统只做「建议」，最终由你确认。选错了下游会跟着错。
+      </div>
+      <div id="suggest-area"></div>
+      <button class="btn ghost" style="margin-top:14px" onclick="toggleAllCodes()">
+        都不对，查看全部缺陷码
+      </button>
+      <div id="all-codes" class="hidden" style="margin-top:12px"></div>
+    </div>
+    <div class="hint" style="text-align:center; margin-bottom:10px">
+      单据号：<span id="draft-no">—</span> · 状态：待确认
+    </div>
+  </section>
+
+  <!-- ============ 第 3 步：回执 ============ -->
+  <section id="step3" class="hidden">
+    <div class="card receipt">
+      <div style="font-size:13px; color:var(--muted)">缺陷单已提交</div>
+      <div class="no" id="receipt-no">—</div>
+      <div class="sub" id="receipt-status">已提交，等待质量工程师判定</div>
+      <div id="receipt-backfill" class="badge-backfill hidden">补录 · 非实时上报</div>
+    </div>
+    <button class="btn" onclick="resetForm()">再录一条</button>
+    <button class="btn ghost" style="margin-top:10px" onclick="location.reload()">查看本线最近记录</button>
+  </section>
+
+  <!-- ============ 本线最近记录 ============ -->
+  <div class="card" id="recent-card">
+    <h2>本线最近记录</h2>
+    <div id="recent-list"><div class="hint">加载中…</div></div>
+  </div>
+</div>
+
+<!-- ============ 登录遮罩 ============ -->
+<div class="login-mask" id="login-mask">
+  <div class="login-box">
+    <h2>班组长登录</h2>
+    <p>仅班组长可录入；登录后只能看到本产线数据。</p>
+    <div class="field">
+      <label for="username">登录名</label>
+      <input type="text" id="username" autocomplete="username" placeholder="如 leader01">
+    </div>
+    <div class="field">
+      <label for="password">密码</label>
+      <input type="password" id="password" autocomplete="current-password" placeholder="密码">
+    </div>
+    <div class="err-text" id="login-err"></div>
+    <button class="btn" id="btn-login" onclick="doLogin()">登录</button>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   前端状态与常量
+   ===================================================================== */
+const API = "/api/v1";
+const QUEUE_KEY = "qt_defect_queue";        // 离线暂存键（localStorage）
+const QUEUE_MAX = 20;                        // 队列上限，超限提示先联网
+const LS_TOKEN = "qt_token";                 // 令牌
+const LS_USER = "qt_user";                   // 当前用户（含 role/line_id）
+
+const state = {
+  token: localStorage.getItem(LS_TOKEN) || "",
+  user: JSON.parse(localStorage.getItem(LS_USER) || "null"),
+  codes: [],           // 缺陷码字典（分组展示）
+  codeIndex: {},       // code → {name, category}
+  opCode: "",
+  photoToken: null,
+  draftNo: null,       // 第一步返回的草稿号
+  suggested: [],
+  selectedCode: null,
+  submitting: false,
+};
+
+/* 工序码：现场固定几道工序，做成大按钮比下拉更快 */
+const OP_CODES = ["OP10", "OP20", "OP30", "OP40", "OP50"];
+
+/* =====================================================================
+   通用工具：请求封装 / 提示条 / 步骤切换
+   ===================================================================== */
+async function api(path, options = {}) {
+  const headers = Object.assign(
+    { "Content-Type": "application/json" },
+    options.headers || {}
+  );
+  if (state.token) headers["Authorization"] = "Bearer " + state.token;
+  const resp = await fetch(API + path, Object.assign({}, options, { headers }));
+  let body;
+  try {
+    body = await resp.json();
+  } catch (e) {
+    throw { code: -1, message: "服务返回异常，请稍后重试" };
+  }
+  // 401：令牌过期/无效 → 回到登录
+  if (body.code === 40101 || body.code === 40103) {
+    logout();
+    throw body;
+  }
+  if (body.code !== 0) throw body;      // 业务错误统一带中文 message
+  return body.data;
+}
+
+function banner(text, kind = "info", sticky = false) {
+  const el = document.getElementById("banner");
+  el.className = "banner " + kind;
+  el.textContent = text;
+  el.classList.remove("hidden");
+  if (!sticky) setTimeout(() => el.classList.add("hidden"), 4000);
+}
+
+function setStep(n) {
+  ["step1", "step2", "step3"].forEach((id, i) => {
+    document.getElementById(id).classList.toggle("hidden", i !== n - 1);
+  });
+  const tabs = ["step1-tab", "step2-tab", "step3-tab"];
+  tabs.forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.className = "s" + (i === n - 1 ? " on" : (i < n - 1 ? " done" : ""));
+  });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+/* =====================================================================
+   登录
+   ===================================================================== */
+async function doLogin() {
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  const err = document.getElementById("login-err");
+  err.classList.remove("show");
+  if (!username || !password) {
+    err.textContent = "请填写登录名和密码";
+    err.classList.add("show");
+    return;
+  }
+  const btn = document.getElementById("btn-login");
+  btn.disabled = true; btn.textContent = "登录中…";
+  try {
+    const data = await api("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    if (data.user.role !== "shift_leader") {
+      err.textContent = "该账号不是班组长，无法使用现场录入";
+      err.classList.add("show");
+      return;
+    }
+    state.token = data.token;
+    state.user = data.user;
+    localStorage.setItem(LS_TOKEN, data.token);
+    localStorage.setItem(LS_USER, JSON.stringify(data.user));
+    document.getElementById("login-mask").classList.add("hidden");
+    await boot();
+  } catch (e) {
+    err.textContent = e.message || "登录失败";
+    err.classList.add("show");
+  } finally {
+    btn.disabled = false; btn.textContent = "登录";
+  }
+}
+
+function logout() {
+  localStorage.removeItem(LS_TOKEN);
+  localStorage.removeItem(LS_USER);
+  state.token = ""; state.user = null;
+  document.getElementById("login-mask").classList.remove("hidden");
+}
+
+/* =====================================================================
+   初始化：字典 / 工序按钮 / 最近记录 / 队列
+   ===================================================================== */
+async function boot() {
+  renderOpChips();
+  bindEvents();
+  await Promise.all([loadCodes(), loadRecent()]);
+  updateQueueBadge();
+  startQueueTimer();
+}
+
+function renderOpChips() {
+  const box = document.getElementById("op-chips");
+  box.innerHTML = "";
+  OP_CODES.forEach(code => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip";
+    btn.textContent = code;
+    btn.onclick = () => {
+      state.opCode = code;
+      [...box.children].forEach(c => c.classList.remove("on"));
+      btn.classList.add("on");
+    };
+    box.appendChild(btn);
+  });
+}
+
+async function loadCodes() {
+  try {
+    const data = await api("/defect-codes");
+    state.codes = data.groups || [];
+    state.codeIndex = {};
+    state.codes.forEach(g => g.items.forEach(it => {
+      state.codeIndex[it.code] = { name: it.name, category: g.category };
+    }));
+  } catch (e) {
+    banner("缺陷码字典加载失败：" + e.message, "err");
+  }
+}
+
+async function loadRecent() {
+  const box = document.getElementById("recent-list");
+  try {
+    const data = await api("/defects");
+    if (!data.defects.length) {
+      box.innerHTML = '<div class="hint">本线还没有录入记录</div>';
+      return;
+    }
+    box.innerHTML = data.defects.slice(0, 8).map(d => `
+      <div class="list-item">
+        <div>
+          <div>${escapeHtml(d.description)}</div>
+          <div class="meta">${escapeHtml(d.defect_no)} · ${escapeHtml(d.work_order_id)}
+            · ${escapeHtml(d.severity || "")} · ${escapeHtml(d.recorded_at || "")}</div>
+        </div>
+        <div style="text-align:right; white-space:nowrap">
+          <span class="tag ${d.status}">${d.status === "pending" ? "已提交" : "待确认"}</span>
+          ${d.is_backfill ? '<span class="tag backfill">补录</span>' : ""}
+        </div>
+      </div>`).join("");
+  } catch (e) {
+    box.innerHTML = '<div class="hint">记录加载失败：' + escapeHtml(e.message) + "</div>";
+  }
+}
+</script>
+</body>
+</html>
