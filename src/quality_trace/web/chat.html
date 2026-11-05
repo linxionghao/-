@@ -57,6 +57,16 @@
   #send:disabled { background: #9db4d0; cursor: not-allowed; }
   #stop { background: #fff; color: #cf1322; border: 1px solid #cf1322; display: none; }
 
+  /* 业务时刻条 */
+  #asof-bar { display:flex; align-items:center; gap:8px; font-size:12px;
+    color:#5a6b85; padding:4px 2px 8px; flex-wrap:wrap; }
+  #asof-bar input[type=date] { border:1px solid #d8e0ea; border-radius:6px;
+    padding:4px 6px; font-size:12px; color:#1f3a5f; }
+  #asof-bar button { border:1px solid #d8e0ea; background:#fff; border-radius:6px;
+    padding:4px 8px; font-size:12px; cursor:pointer; color:#5a6b85; }
+  .asof-hint { color:#8a99ad; }
+  .input-row { display:flex; gap:10px; align-items:flex-end; }
+
   /* 打字机光标 */
   .caret::after { content: "▍"; animation: blink 1s step-start infinite; }
   @keyframes blink { 50% { opacity: 0; } }
@@ -75,9 +85,17 @@
 <div id="status"></div>
 
 <footer>
-  <textarea id="question" placeholder="例如：切刀磨损导致螺纹外径偏小，怎么处理？（Enter 发送）"></textarea>
-  <button id="send">发送</button>
-  <button id="stop">停止</button>
+  <div id="asof-bar">
+    <label for="as-of">按业务时刻检索（可选）</label>
+    <input type="date" id="as-of">
+    <span class="asof-hint">留空 = 按当前在架标准；填日期 = 只用该日生效的版本</span>
+    <button type="button" id="asof-clear">清除</button>
+  </div>
+  <div class="input-row">
+    <textarea id="question" placeholder="例如：切刀磨损导致螺纹外径偏小，怎么处理？（Enter 发送）"></textarea>
+    <button id="send">发送</button>
+    <button id="stop">停止</button>
+  </div>
 </footer>
 
 <script>
@@ -200,7 +218,7 @@ async function ask(question) {
     const resp = await fetch(API + "/api/v1/chat", {
       method: "POST",
       headers: HEADERS,
-      body: JSON.stringify({ session_id: sessionId || null, question }),
+      body: JSON.stringify({ session_id: sessionId || null, question, as_of: asOfValue() }),
       signal: controller.signal,
     });
 
@@ -321,6 +339,18 @@ async function checkHealth() {
 }
 
 /* ---------------------------- 事件绑定 ---------------------------- */
+/* 业务时刻：空值表示按当前在架标准检索（服务端 as_of=null） */
+function asOfValue() {
+  const el = document.getElementById("as-of");
+  return el && el.value ? el.value : null;
+}
+const $asofClear = document.getElementById("asof-clear");
+if ($asofClear) {
+  $asofClear.onclick = () => {
+    document.getElementById("as-of").value = "";
+  };
+}
+
 $send.onclick = () => {
   const q = $question.value.trim();
   if (!q) return;
