@@ -371,3 +371,72 @@ recorded_at  TEXT NOT NULL   -- 录入时刻：数据落到系统的时间（服
 - 已有数据库（阶段 2 建的 chat_message）可直接升级到批次 1c 的审计列，无需重建。
 
 ---
+
+## 8. 接口一览
+
+所有 JSON 接口统一返回：
+
+```json
+{"code": 0, "message": "成功", "data": {...}}
+```
+
+`code != 0` 时 `message` 恒为可直接展示的中文；HTTP 状态码取错误码前三位。
+降级类（50001/50002/50401）HTTP 仍为 200，`degraded` 放在 `data` 里。
+
+### 8.1 认证
+
+| 方法 | 路径 | 角色 | 说明 |
+|---|---|---|---|
+| POST | `/api/v1/auth/login` | 全部 | 用户名密码 → JWT（12 小时） |
+| GET | `/api/v1/auth/me` | 全部 | 校验令牌并返回当前用户 |
+| POST | `/admin/login` | QM | 后台表单登录（HttpOnly Cookie） |
+| POST | `/admin/logout` | QM | 退出 |
+
+### 8.2 问答（QE）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/chat` | SSE 流式问答；body 支持 `session_id`、`question`、`as_of` |
+| POST | `/api/v1/sessions` | 新建会话 |
+| GET | `/api/v1/sessions/{id}/messages` | 历史消息 + 引用（仅本人） |
+| DELETE | `/api/v1/sessions/{id}` | 归档会话 |
+| GET | `/api/v1/health` | 健康检查（索引状态） |
+
+SSE 事件序列：`status`（正在检索依据…）→ `sources`（引用数组）→ `delta`（增量文本，多条）→ `done`。
+断流或超时会先发 `sources` 再发 `error`，保证引用不丢。
+
+### 8.3 主管后台（QM）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/admin/documents` | 上传 md/pdf（multipart，版本与生效区间必填） |
+| GET | `/api/v1/admin/documents` | 文档列表（状态/类型筛选） |
+| GET | `/api/v1/admin/documents/{id}/chunks` | 切片核对 |
+| POST | `/api/v1/admin/documents/{id}/archive` | 下架（不物理删除） |
+| POST | `/api/v1/admin/documents/{id}/restore` | 恢复上架 |
+| GET / POST / PUT | `/api/v1/admin/prompt-templates` | 读取 / 首次创建 / 修改（立即生效） |
+| GET | `/api/v1/admin/audit/messages` | 审计列表（role/batch_no/date_from/date_to/only_flagged） |
+| GET | `/api/v1/admin/audit/messages/{id}` | 审计详情（含引用） |
+| POST | `/api/v1/admin/audit/messages/{id}/review` | 标记已核查 + 备注 |
+| POST | `/api/v1/admin/audit/rescan` | 全量补扫越界标记 |
+| GET | `/api/v1/admin/attributions` | 归因单列表 |
+| GET | `/api/v1/admin/attributions/{id}` | 证据链 + 审批记录 |
+| POST | `/api/v1/admin/attributions/{id}/approve` | 批准 |
+| POST | `/api/v1/admin/attributions/{id}/reject` | 退回（必填意见） |
+| GET | `/api/v1/admin/attributions/{id}/export-8d` | 下载 8D 草稿（Markdown） |
+
+### 8.4 现场录入（SL）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/defect-codes` | 缺陷码字典（按分组） |
+| POST | `/api/v1/defects` | 建 draft + 返回候选码 |
+| POST | `/api/v1/defects/{no}/confirm` | 人工确认缺陷码 → pending |
+| GET | `/api/v1/defects` | 本线列表（字段按角色裁剪） |
+| GET | `/api/v1/defects/{no}` | 详情（他线 40404） |
+| GET | `/api/v1/work-orders/{id}` | 工单失焦校验 |
+| POST | `/api/v1/uploads/photo` | 照片预上传，返回 token |
+
+完整规范见 [`docs/api.md`](docs/api.md)；问答接口细节见 [`docs/chat-api.md`](docs/chat-api.md)。
+
+---
