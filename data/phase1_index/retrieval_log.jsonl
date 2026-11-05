@@ -1,4 +1,0 @@
-{"ts": "2026-10-30T09:31:49", "query": "螺纹检验的抽样方案是什么？", "mode": "bm25_only", "degraded": false, "scores": [{"chunk_index": 7, "rrf": 0.016393}, {"chunk_index": 6, "rrf": 0.016129}, {"chunk_index": 4, "rrf": 0.015873}]}
-{"ts": "2026-10-30T09:32:01", "query": "切刀磨损导致螺纹外径偏小，当时怎么处理的？", "mode": "bm25_only", "degraded": false, "scores": [{"chunk_index": 2, "rrf": 0.016393}, {"chunk_index": 8, "rrf": 0.016129}, {"chunk_index": 9, "rrf": 0.015873}]}
-{"ts": "2026-10-30T09:39:57", "query": "螺纹检验的抽样方案是什么？", "mode": "bm25_only", "degraded": false, "scores": [{"chunk_index": 7, "rrf": 0.016393}, {"chunk_index": 6, "rrf": 0.016129}, {"chunk_index": 4, "rrf": 0.015873}]}
-{"ts": "2026-10-30T10:30:46", "query": "螺纹检验的抽样方案是什么？", "mode": "bm25_only", "degraded": false, "scores": [{"chunk_index": 7, "rrf": 0.016393}, {"chunk_index": 6, "rrf": 0.016129}, {"chunk_index": 4, "rrf": 0.015873}]}
