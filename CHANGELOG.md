@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增（阶段 3 · 批次 1c：对话审计 + 归因审批）
+
+- 数据层：`chat_message` 增审计标记列（根因结论/无引用/废止版本 + 人工核查三列）与 `chat_session.batch_no`，SQLite 逐条 ALTER 迁移，旧库可直接升级
+- 新增 `work_order` / `defect_item` / `attribution_order` 三表（工单与缺陷为简表，完整谱系留阶段 4）
+- 审计服务 `core/services/audit.py`：三规则纯函数 + 单条落库 + 全量补扫；**补扫不覆盖人工核查结论**，规则升级可反复重跑
+- 归因服务 `core/services/attribution.py`：状态机（submitted→approved/rejected，重复审批 40906）、退回必填意见、8D 草稿导出（有缓存直读 / 无缓存调 LLM 并缓存 / 不可用报 50002 且不留半截文件）
+- 问答链路收尾自动触发审计：回答落库后同步跑三规则，越界即时可见
+- 主管后台新增三页：对话审计（角色/批次/时间/仅越界四维筛选 + 核查）、归因审批列表、归因详情（证据链 + 批准/退回 + 8D 下载）；导航与仪表盘统计同步
+- JSON 接口 #15–#23：审计筛选/详情/核查/补扫、归因列表/详情/批准/退回/导出 8D
+- 测试：`tests/test_audit.py`（31 例）+ `tests/test_attribution.py`（11 例），全量 131 通过
+
 ### 新增（阶段 3 · 批次 1b：主管后台——知识库 + 提示词）
 
 - 数据层：`kb_doc`（版本号+生效区间必填、下架≠删除、唯一索引防同名同版本）、`kb_chunk`、`prompt_template` + 历史表四张新表
