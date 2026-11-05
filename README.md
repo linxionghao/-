@@ -4,7 +4,7 @@
 
 一个不良品单进去，四样东西出来：**关联对象、疑似原因排序、影响范围清单、8D 草稿**。
 
-[![tests](https://img.shields.io/badge/tests-189%20passed-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-214%20passed-brightgreen)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)]()
 [![fastapi](https://img.shields.io/badge/FastAPI-async-009688)]()
 [![ci](https://img.shields.io/badge/ci-py3.9%20%7C%203.11-informational)]()
