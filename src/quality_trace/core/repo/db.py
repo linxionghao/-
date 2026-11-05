@@ -774,6 +774,16 @@ def archived_doc_versions(conn: sqlite3.Connection) -> set:
 
 
 # ================================================================= 工单 / 缺陷
+def get_work_order(
+    conn: sqlite3.Connection, work_order_id: str
+) -> Optional[Dict[str, Any]]:
+    """按单号取工单（移动端失焦校验用）。"""
+    row = conn.execute(
+        "SELECT * FROM work_order WHERE work_order_id = ?", (work_order_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def insert_work_order(
     conn: sqlite3.Connection, work_order_id: str, product_name: str,
     line_id: str, planned_qty: int = 0,
