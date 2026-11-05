@@ -560,3 +560,37 @@ chore(repo): 新增 .gitignore 并清理误跟踪的缓存
 ```
 
 ---
+
+## 11. 常见问题
+
+**Q1：启动后问答报 40402「知识库索引不存在」**
+没有执行入库。跑 `python scripts/seed_demo_data.py --kb`，或直接 `bash scripts/run_server.sh`
+（脚本会先重建索引再起服务）。
+
+**Q2：登录成功但接口返回 40301**
+角色不匹配。问答只允许质量工程师，录入只允许班组长，后台只允许主管。
+用种子账号 `qe001 / leader01 / manager01` 分别验证。
+
+**Q3：回答是空的，只有引用卡片和黄条**
+没有配 LLM Key。这是**设计内降级**（50002 非失败）：检索与引用照常工作，
+配好 `QT_LLM_API_KEY` 与 `config/llm.yaml` 的 `base_url/model` 后即有正文。
+
+**Q4：照片上传返回 40003**
+两种原因：超过 2MB，或文件头不是 JPEG/PNG。前端已做 canvas 压缩，
+若仍失败，检查是否用了非图片文件、或浏览器未执行压缩（极旧内核）。
+
+**Q5：班组长看不到刚提交的单**
+建单只到 `draft`，必须点选缺陷码确认后才转 `pending`；`draft` 单在列表里显示「待确认」，
+属于正常状态，不是丢失。
+
+**Q6：如何重置演示数据**
+删除 `data/trace.db*` 与 `data/uploads/`，重新执行 seed 即可。
+`chunks.json` 不必删，服务启动会按数据库重建。
+
+**Q7：端口被占用**
+`bash scripts/run_server.sh 8010` 换端口；Windows 用 `netstat -ano | findstr :8000` 找进程。
+
+**Q8：中文在 Windows 控制台乱码**
+PowerShell 先执行 `chcp 65001`；服务端文件读写统一 UTF-8，不受影响。
+
+---
