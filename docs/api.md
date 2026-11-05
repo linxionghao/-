@@ -341,3 +341,118 @@ GET /api/v1/health
 
 ---
 
+## 8. 主管后台接口（仅 QM）
+
+### 8.1 上传文档
+
+```
+POST /api/v1/admin/documents
+Content-Type: multipart/form-data
+
+file=@检验规范v3.md
+doc_type=standard                 # standard / sop / case
+version=v3                        # 必填
+effective_from=2026-01-01         # 必填
+effective_to=2027-12-31           # 必填
+```
+
+成功：
+
+```json
+{
+  "code": 0,
+  "message": "上传成功，索引已重建",
+  "data": {
+    "doc_id": "doc-xxx",
+    "doc_name": "检验规范v3",
+    "version": "v3",
+    "chunk_count": 4,
+    "vector_status": "pending",
+    "index_stats": {"documents": 3, "chunks": 12}
+  }
+}
+```
+
+| 错误 | 场景 |
+|---|---|
+| 40001 | 缺版本号/生效区间 |
+| 40903 | 同名同版本已存在 |
+| 41301 | 文件 > 10MB |
+| 41501 | 非 md/pdf |
+| 50004 | 已入库但向量化暂缺（非失败） |
+
+### 8.2 文档列表 / 切片 / 上下架
+
+```
+GET  /api/v1/admin/documents?status=active&doc_type=standard
+GET  /api/v1/admin/documents/{doc_id}/chunks
+POST /api/v1/admin/documents/{doc_id}/archive     # 下架，不物理删除
+POST /api/v1/admin/documents/{doc_id}/restore     # 恢复上架
+```
+
+下架响应会带回重建后的索引统计，便于确认「废止版已退出候选集」：
+
+```json
+{"code": 0, "message": "已下架",
+ "data": {"doc": {"doc_id": "doc-xxx", "status": "archived"},
+          "index_stats": {"documents": 2, "chunks": 9}}}
+```
+
+### 8.3 提示词模板
+
+```
+GET  /api/v1/admin/prompt-templates      # 当前模板 + 最近历史
+POST /api/v1/admin/prompt-templates      # 首次创建
+PUT  /api/v1/admin/prompt-templates/{id} # 修改（下一条回答立即生效）
+```
+
+```json
+{"code": 0, "message": "成功，下一条回答立即生效",
+ "data": {"template": {"template_id": "tpl-xxx", "content": "…",
+                        "updated_by": "u-xxx", "updated_at": "2026-11-05T22:41:03"}}}
+```
+
+### 8.4 对话审计
+
+```
+GET  /api/v1/admin/audit/messages?role=quality_engineer&batch_no=WO-20261030-001
+                                  &date_from=2026-11-01&date_to=2026-11-05
+                                  &only_flagged=1&limit=200
+GET  /api/v1/admin/audit/messages/{message_id}
+POST /api/v1/admin/audit/messages/{message_id}/review   {"note":"已核查"}
+POST /api/v1/admin/audit/rescan
+```
+
+列表项关键字段：
+
+```json
+{
+  "message_id": "msg-xxx",
+  "content": "经分析，根因已确定为切刀磨损",
+  "batch_no": "WO-20261030-001",
+  "session_role": "quality_engineer",
+  "flag_root_cause": 1,
+  "flag_no_citation": 1,
+  "flag_stale_version": 0,
+  "reviewed_by": null
+}
+```
+
+`rescan` 返回 `{"scanned": 12, "flagged": 3}`，**不覆盖** `reviewed_*` 字段。
+
+### 8.5 归因审批与 8D
+
+```
+GET  /api/v1/admin/attributions?status=submitted
+GET  /api/v1/admin/attributions/{attribution_id}
+POST /api/v1/admin/attributions/{attribution_id}/approve  {"note":"同意"}
+POST /api/v1/admin/attributions/{attribution_id}/reject   {"note":"请补充点检记录"}
+GET  /api/v1/admin/attributions/{attribution_id}/export-8d
+```
+
+- 退回 `note` 为空 → 40001；重复审批 → 40906；
+- 导出返回 `text/markdown` + `Content-Disposition: attachment; filename="8D-DF-xxx.md"`；
+- 无草稿且 LLM 不可用 → 50002（JSON 错误，不是半截文件）。
+
+---
+
