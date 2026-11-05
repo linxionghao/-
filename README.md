@@ -48,3 +48,65 @@ L4 的根因确认需要人签字，这是产品红线，不是技术限制。
 | **判定权在人** | 缺陷提交只到 `pending`，8D 只出草稿，根因只能写「疑似（待验证）」 |
 
 ---
+
+## 2. Quick Start：五分钟跑起来
+
+### 2.1 环境
+
+- Python 3.9+（开发环境为 3.13，CI 覆盖 3.9 / 3.11 / 3.13）
+- 无需数据库服务：SQLite 单文件，开箱即用
+- 无需 GPU / 向量库服务：默认 BM25 单通道，装 `faiss-cpu` 可开启向量通道
+
+```bash
+git clone https://github.com/linxionghao/-.git quality-trace
+cd quality-trace
+
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate      # Linux / macOS
+
+pip install -r requirements.txt
+pip install -e .
+```
+
+### 2.2 初始化演示数据
+
+```bash
+# 三角色账号 + 工单 + 缺陷码字典 + 知识库语料 + 审计样本与归因单
+python scripts/seed_demo_data.py --kb --audit
+```
+
+脚本是**幂等**的：重复执行只更新描述字段，不会产生重复账号、重复文档或重复会话。
+
+演示账号（密码与登录名相同，仅用于课程演示，生产环境严禁如此）：
+
+| 账号 | 角色 | 数据范围 |
+|---|---|---|
+| `qe001` | 质量工程师 | 本人会话；全部缺陷单只读 |
+| `leader01` | 班组长（line-01） | 本产线缺陷单，看不到归因与判定字段 |
+| `manager01` | 质量主管 | 全部（知识库、提示词、审计、审批） |
+
+### 2.3 启动
+
+```bash
+# Linux / macOS
+bash scripts/run_server.sh
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File scripts/run_server.ps1
+```
+
+脚本会先重建一次知识库索引，再在 `http://127.0.0.1:8000` 启动服务。
+
+### 2.4 接入真实大模型（可选）
+
+不配 Key 也能完整演示：检索、引用、降级提示全部可用，只是不生成自然语言回答。
+
+```bash
+# config/llm.yaml 里改成你的供应商地址与模型名
+export QT_LLM_API_KEY=sk-xxxx        # Windows: set QT_LLM_API_KEY=sk-xxxx
+```
+
+供应商需兼容 OpenAI 协议（`/chat/completions`），换供应商只改 YAML 的 `base_url` 与 `model`。
+
+---
