@@ -117,6 +117,28 @@ def _check_work_order(conn, work_order_id: str, line_id: Optional[str]) -> Dict:
     return order
 
 
+def check_work_order(
+    conn, user: Dict[str, Any], work_order_id: str,
+) -> Dict[str, Any]:
+    """移动端失焦校验：工单是否存在、是否属于本线。
+
+    只回传必要字段（产品名、产线、状态），不把工单表整行抛给前端。
+    班组长查他线工单同样返回 40406——校验接口不能变成探测工具。
+    """
+    work_order_id = (work_order_id or "").strip()
+    if not work_order_id:
+        raise ApiError(ErrorCode.BAD_REQUEST, "工单号不能为空")
+    line_id = user.get("line_id") if user.get("role") == "shift_leader" else None
+    order = _check_work_order(conn, work_order_id, line_id)
+    return {
+        "work_order_id": order["work_order_id"],
+        "product_name": order["product_name"],
+        "line_id": order["line_id"],
+        "status": order["status"],
+        "planned_qty": order["planned_qty"],
+    }
+
+
 def create_draft(
     conn, *, user: Dict[str, Any], work_order_id: str, description: str,
     op_code: str = "", qty: int = 1, severity: str = "一般",

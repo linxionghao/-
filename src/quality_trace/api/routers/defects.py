@@ -135,6 +135,16 @@ async def confirm_defect(
 
 
 # ================================================================ 查询
+@router.get("/work-orders/{work_order_id}")
+async def check_work_order(
+    work_order_id: str,
+    user: Dict[str, Any] = Depends(_ALL_ROLES),
+    conn=Depends(get_db),
+):
+    """工单校验（移动端输入框失焦调用，避免提交时才报 40406）。"""
+    return _ok(defect_service.check_work_order(conn, user, work_order_id))
+
+
 @router.get("/defects")
 async def list_defects(
     user: Dict[str, Any] = Depends(_ALL_ROLES),
