@@ -670,7 +670,7 @@ python scripts/ui_check_pages.py 8000
 | [`stage3-design.md`](docs/stage3-design.md) | 阶段 3 的批次拆分、决策记录（ADR 摘要）、权限矩阵初稿 | 想了解取舍过程 |
 | [`chat-api.md`](docs/chat-api.md) | 问答接口的单独设计稿（SSE 时序、降级语义） | 只关心问答链路 |
 | [`discovery-report.md`](docs/discovery-report.md) | 同行方案调研（QMS/MES/RAG 落地） | 想知道"别人怎么做" |
-| [`screenshots/`](docs/screenshots/) | 7 张真实页面截图（三端入口 + 巡检留证） | 不想跑代码就看效果 |
+| [`screenshots/`](docs/screenshots/) | 9 张真实页面截图（三端入口 + 巡检留证） | 不想跑代码就看效果 |
 
 ---
 
