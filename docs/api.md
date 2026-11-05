@@ -253,3 +253,91 @@ POST /admin/logout       # 清除 Cookie 并跳转登录页
 
 ---
 
+## 7. 问答接口
+
+### 7.1 发起问答（SSE）
+
+```
+POST /api/v1/chat
+Authorization: Bearer <QE token>
+Content-Type: application/json
+
+{
+  "session_id": "sess-xxx",          // 可空：为空自动建会话
+  "question": "螺纹检验的抽样方案是什么？",
+  "as_of": "2026-06-01"              // 可空：按业务时刻检索（版本硬闸）
+}
+```
+
+响应 `text/event-stream`，事件序列固定：
+
+| 事件 | data | 时机 |
+|---|---|---|
+| `status` | `{"stage":"retrieving","message":"正在检索依据…"}` | 检索前 |
+| `sources` | `{"sources":[{"seq":1,"source_file":"…","version":"v2","clause":"3. 抽样","snippet":"…","score":0.83}]}` | 检索完成、正文之前 |
+| `delta` | `{"text":"增量片段"}` | 生成中，多条 |
+| `done` | `{"message_id":"…","degraded":null}` | 正常结束 |
+| `error` | `{"code":50003,"message":"…"}` | 流中异常（此时 HTTP 已是 200） |
+
+**为什么 sources 先发**：断流、超时、用户点「停止」都不会丢引用；
+审计页与历史恢复都依赖已落库的引用行。
+
+**降级示例**（无 LLM Key，HTTP 仍 200）：
+
+```
+event: sources
+data: {"sources":[...]}
+
+event: done
+data: {"message_id":"msg-xxx","degraded":{"code":50002,"message":"大模型不可用，仅返回检索依据"}}
+```
+
+**as_of 语义**：非空时走数据库版本闸（`status='active'` 且生效区间覆盖该日），
+不读索引文件；格式非法直接 40001。
+
+### 7.2 会话
+
+```
+POST   /api/v1/sessions                    # 新建会话
+GET    /api/v1/sessions/{id}/messages      # 历史消息 + 引用
+DELETE /api/v1/sessions/{id}               # 归档（软删除）
+```
+
+历史消息响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "session_id": "sess-xxx",
+    "messages": [
+      {
+        "message_id": "msg-xxx",
+        "role": "assistant",
+        "content": "……",
+        "status": "complete",
+        "created_at": "2026-11-05T22:41:03",
+        "citations": [
+          {"seq": 1, "source_file": "检验标准-螺纹外径检验规范",
+           "version": "v2", "clause": "3. 抽样", "snippet": "…"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+**归属校验**：非本人会话一律 40401，不暴露存在性。
+
+### 7.3 健康检查
+
+```
+GET /api/v1/health
+```
+
+```json
+{"code": 0, "message": "健康", "data": {"status": "ok", "index_ready": true, "db": "ok"}}
+```
+
+---
+
