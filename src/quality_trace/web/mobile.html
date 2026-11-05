@@ -419,6 +419,506 @@ async function loadRecent() {
     box.innerHTML = '<div class="hint">记录加载失败：' + escapeHtml(e.message) + "</div>";
   }
 }
+
+/* =====================================================================
+   第 1 步：数量 / 照片压缩 / 表单校验 / 提交
+   ===================================================================== */
+function bumpQty(delta) {
+  const el = document.getElementById("qty");
+  const next = Math.max(1, Math.min(99999, (parseInt(el.value, 10) || 1) + delta));
+  el.value = next;
+}
+
+function compressImage(file) {
+  /* 浏览器侧压缩：最长边 1280、JPEG 0.7。
+     手机上原图常 3~5MB，压缩后 150~300KB，弱网下这是能否传上去的关键。 */
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const maxSide = 1280;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.7));
+      };
+      img.onerror = () => reject(new Error("图片读取失败"));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function onPhotoChange(evt) {
+  const file = evt.target.files && evt.target.files[0];
+  if (!file) return;
+  try {
+    const dataUrl = await compressImage(file);
+    document.getElementById("photo-img").src = dataUrl;
+    document.getElementById("photo-preview").classList.remove("hidden");
+    state.photoData = dataUrl;
+    state.photoToken = null;          // 换了图，旧 token 作废
+    // 联网时立即预上传，提交时只带 token（包体小、失败可单独重试）
+    if (navigator.onLine) {
+      try {
+        const data = await api("/uploads/photo", {
+          method: "POST", body: JSON.stringify({ photo: dataUrl }),
+        });
+        state.photoToken = data.photo_token;
+      } catch (e) {
+        banner("照片暂存失败，提交时将随单一起上传：" + e.message, "warn");
+      }
+    }
+  } catch (e) {
+    banner(e.message, "err");
+  } finally {
+    evt.target.value = "";             // 允许重复选同一张
+  }
+}
+
+function clearPhoto() {
+  state.photoData = null;
+  state.photoToken = null;
+  document.getElementById("photo-preview").classList.add("hidden");
+  document.getElementById("photo-img").src = "";
+}
+
+function validateForm() {
+  const workOrder = document.getElementById("work-order").value.trim();
+  const desc = document.getElementById("description").value.trim();
+  const qty = parseInt(document.getElementById("qty").value, 10) || 0;
+  const err = document.getElementById("desc-err");
+  const woErr = document.getElementById("wo-err");
+  err.classList.remove("show"); woErr.classList.remove("show");
+
+  if (!workOrder) {
+    woErr.textContent = "请填写工单号";
+    woErr.classList.add("show");
+    return null;
+  }
+  if (desc.length < 4) {
+    err.textContent = "描述至少 4 个字，便于准确归类";
+    err.classList.add("show");
+    return null;
+  }
+  if (qty < 1) {
+    err.textContent = "数量至少为 1";
+    err.classList.add("show");
+    return null;
+  }
+  const severity = document.querySelector("#sev-chips .chip.on").dataset.sev;
+  return { workOrder, desc, qty, severity };
+}
+
+function newClientDraftId() {
+  /* 离线补传幂等键：优先用 crypto.randomUUID，老浏览器回退时间戳+随机 */
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return "dr-" + Date.now() + "-" + Math.random().toString(16).slice(2, 10);
+}
+
+async function submitDefect() {
+  if (state.submitting) return;
+  const form = validateForm();
+  if (!form) return;
+
+  const payload = {
+    work_order_id: form.workOrder,
+    op_code: state.opCode,
+    description: form.desc,
+    qty: form.qty,
+    severity: form.severity,
+    // 发生时刻用本机时间；离线暂存时它就是暂存时刻，补录标记由此而来
+    occurred_at: new Date().toISOString(),
+    client_draft_id: newClientDraftId(),
+  };
+
+  /* ---- 离线：直接入队，不发网络请求 ---- */
+  if (!navigator.onLine) {
+    openOfflinePicker(payload);
+    return;
+  }
+
+  const btn = document.getElementById("btn-submit");
+  btn.disabled = true; btn.textContent = "提交中…";
+  state.submitting = true;
+  try {
+    if (state.photoData && !state.photoToken) {
+      const up = await api("/uploads/photo", {
+        method: "POST", body: JSON.stringify({ photo: state.photoData }),
+      });
+      state.photoToken = up.photo_token;
+    }
+    if (state.photoToken) payload.photo_token = state.photoToken;
+
+    const data = await api("/defects", {
+      method: "POST", body: JSON.stringify(payload),
+    });
+    state.draftNo = data.defect_no;
+    state.suggested = data.suggested || [];
+    renderSuggestions(data);
+    setStep(2);
+    if (data.normalize && data.normalize.degraded) {
+      banner(data.normalize.degraded_reason, "warn", true);
+    }
+  } catch (e) {
+    // 网络类错误（非业务错误）→ 自动入队，避免现场白填
+    if (e.code === -1 || e.code === undefined) {
+      openOfflinePicker(payload);
+      banner("网络异常，已转为离线暂存", "warn");
+    } else {
+      banner(e.message, "err", true);
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = "提交并获取候选缺陷码";
+    state.submitting = false;
+  }
+}
+
+/* 离线提交：先人工选码（此时无法调用归一化），再入队 */
+function openOfflinePicker(payload) {
+  banner("当前离线：请手动选择缺陷码，恢复网络后自动补传", "warn", true);
+  state.pendingOffline = payload;
+  renderAllCodes(code => {
+    enqueue({ payload, defect_code: code });
+    document.getElementById("all-codes").classList.add("hidden");
+    showReceipt(null, true);
+    resetFormKeepQueue();
+  }, "离线提交：请选择缺陷码");
+}
+
+/* =====================================================================
+   第 2 步：候选缺陷码 → 人工确认
+   ===================================================================== */
+function renderSuggestions(data) {
+  const area = document.getElementById("suggest-area");
+  document.getElementById("draft-no").textContent = data.defect_no;
+  const list = data.suggested || [];
+
+  if (!list.length) {
+    area.innerHTML = '<div class="hint">系统没有给出可靠候选，请从全部缺陷码中选择。</div>';
+    renderAllCodes(confirmCode);
+    return;
+  }
+
+  /* 按分组渲染大按钮：候选码 + 置信度，点击即进入确认 */
+  const groups = {};
+  list.forEach(item => {
+    (groups[item.category] = groups[item.category] || []).push(item);
+  });
+  area.innerHTML = Object.keys(groups).map(cat => `
+    <div style="margin-bottom:14px">
+      <div class="hint" style="margin-bottom:8px">${escapeHtml(cat)}</div>
+      <div class="chips">
+        ${groups[cat].map(it => `
+          <button type="button" class="chip wide" onclick="confirmCode('${it.code}')">
+            <strong>${escapeHtml(it.name)}</strong>
+            <span style="color:#6b7688; font-size:12px; margin-left:8px">
+              ${it.code} · ${Math.round((it.confidence || 0) * 100)}%
+            </span>
+          </button>`).join("")}
+      </div>
+    </div>`).join("");
+}
+
+/* 全量字典：按分组列出（离线选码与「都不对」共用） */
+function renderAllCodes(onPick, title) {
+  const box = document.getElementById("all-codes");
+  box.classList.remove("hidden");
+  if (title) {
+    box.innerHTML = '<div class="hint" style="margin-bottom:10px">' + escapeHtml(title) + "</div>";
+  }
+  state.codes.forEach(group => {
+    const wrap = document.createElement("div");
+    wrap.style.marginBottom = "14px";
+    wrap.innerHTML = '<div class="hint" style="margin-bottom:8px">'
+      + escapeHtml(group.category) + "</div>";
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    group.items.forEach(item => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip";
+      btn.textContent = item.name;
+      btn.onclick = () => onPick(item.code);
+      chips.appendChild(btn);
+    });
+    wrap.appendChild(chips);
+    box.appendChild(wrap);
+  });
+}
+
+function toggleAllCodes() {
+  const box = document.getElementById("all-codes");
+  if (box.classList.contains("hidden")) {
+    renderAllCodes(confirmCode);
+  } else {
+    box.classList.add("hidden");
+  }
+}
+
+async function confirmCode(code) {
+  if (!state.draftNo) {
+    banner("草稿单号丢失，请重新提交", "err");
+    return;
+  }
+  try {
+    const data = await api(`/defects/${state.draftNo}/confirm`, {
+      method: "POST", body: JSON.stringify({ defect_code: code }),
+    });
+    showReceipt(data, !!data.is_backfill);
+  } catch (e) {
+    banner(e.message, "err", true);
+  }
+}
+
+/* =====================================================================
+   第 3 步：回执
+   ===================================================================== */
+function showReceipt(data, backfill) {
+  setStep(3);
+  document.getElementById("receipt-no").textContent =
+    (data && data.defect_no) || state.draftNo || "已暂存";
+  document.getElementById("receipt-status").textContent =
+    (data && data.status_text) || "已存入离线队列，联网后自动补传";
+  const badge = document.getElementById("receipt-backfill");
+  if (backfill) {
+    badge.classList.remove("hidden");
+    badge.textContent = data ? "补录 · 非实时上报" : "离线暂存 · 补传时标记补录";
+  } else {
+    badge.classList.add("hidden");
+  }
+  loadRecent();
+  updateQueueBadge();
+}
+
+function resetForm() {
+  state.draftNo = null;
+  state.suggested = [];
+  state.selectedCode = null;
+  state.photoToken = null;
+  state.photoData = null;
+  document.getElementById("work-order").value = "";
+  document.getElementById("description").value = "";
+  document.getElementById("qty").value = 1;
+  document.getElementById("desc-count").textContent = "0";
+  document.querySelectorAll("#sev-chips .chip").forEach((c, i) => {
+    c.classList.toggle("on", i === 1);      // 默认「一般」
+  });
+  document.querySelectorAll("#op-chips .chip").forEach(c => c.classList.remove("on"));
+  state.opCode = "";
+  clearPhoto();
+  document.getElementById("suggest-area").innerHTML = "";
+  document.getElementById("all-codes").innerHTML = "";
+  document.getElementById("all-codes").classList.add("hidden");
+  setStep(1);
+}
+
+function resetFormKeepQueue() {
+  /* 离线入队后回到第 1 步继续录下一条，但保留草稿号展示 */
+  setTimeout(() => {
+    resetForm();
+    banner("已存入离线队列，联网后自动补传", "info");
+  }, 2500);
+}
+
+/* =====================================================================
+   事件绑定与启动
+   ===================================================================== */
+let bound = false;
+function bindEvents() {
+  if (bound) return;
+  bound = true;
+
+  document.getElementById("description").addEventListener("input", e => {
+    document.getElementById("desc-count").textContent = e.target.value.length;
+  });
+  document.getElementById("photo-input").addEventListener("change", onPhotoChange);
+
+  document.querySelectorAll("#sev-chips .chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#sev-chips .chip").forEach(c => c.classList.remove("on"));
+      btn.classList.add("on");
+    });
+  });
+
+  document.getElementById("work-order").addEventListener("blur", e => {
+    const val = e.target.value.trim();
+    const hint = document.getElementById("wo-hint");
+    hint.textContent = val
+      ? "工单号格式：" + (val.startsWith("WO-") ? "✓ 看起来正常" : "通常以 WO- 开头，请核对")
+      : "联网时失焦自动校验工单是否存在";
+  });
+
+  window.addEventListener("online", () => {
+    banner("网络已恢复，正在补传离线记录…", "info");
+    syncQueue();
+  });
+  window.addEventListener("offline", () => {
+    banner("网络已断开，提交将暂存到本地", "warn", true);
+  });
+}
+
+/* =====================================================================
+   离线暂存队列（localStorage）
+   ---------------------------------------------------------------------
+   协议：
+   - 入队：离线提交或网络异常时写入，key = qt_defect_queue；
+   - 幂等：每条带 client_draft_id，服务端唯一键，重复补传返回原单；
+   - 补传：上线事件 / 启动 / 每 30 秒轮询，逐条先建单再确认缺陷码；
+   - 上限：20 条，超限提示先联网（照片 base64 很占空间）；
+   - 失败：retries+1，超过 5 次标红，可手动删除。
+   ===================================================================== */
+function readQueue() {
+  try {
+    return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]");
+  } catch (e) {
+    return [];
+  }
+}
+
+function writeQueue(items) {
+  localStorage.setItem(QUEUE_KEY, JSON.stringify(items));
+  updateQueueBadge();
+}
+
+function enqueue(item) {
+  const queue = readQueue();
+  if (queue.length >= QUEUE_MAX) {
+    banner("离线队列已满（20 条），请先连接网络补传", "err", true);
+    return false;
+  }
+  queue.push(Object.assign({ created_at: new Date().toISOString(), retries: 0 }, item));
+  writeQueue(queue);
+  return true;
+}
+
+function updateQueueBadge() {
+  const n = readQueue().length;
+  const badge = document.getElementById("queue-badge");
+  if (!badge) return;
+  badge.textContent = n + " 条待补传";
+  badge.classList.toggle("hot", n > 0);
+}
+
+let queueTimer = null;
+function startQueueTimer() {
+  if (queueTimer) return;
+  queueTimer = setInterval(() => {
+    if (navigator.onLine && readQueue().length) syncQueue();
+  }, 30000);
+}
+
+async function syncQueue() {
+  const queue = readQueue();
+  if (!queue.length) return;
+  const remain = [];
+  let synced = 0;
+
+  for (const item of queue) {
+    try {
+      // 1) 建单（幂等：同一 client_draft_id 不会落两条）
+      const draft = await api("/defects", {
+        method: "POST",
+        body: JSON.stringify(Object.assign({ is_backfill: true }, item.payload)),
+      });
+      // 2) 人工确认过的缺陷码随队列一起补交
+      if (item.defect_code) {
+        await api(`/defects/${draft.defect_no}/confirm`, {
+          method: "POST",
+          body: JSON.stringify({ defect_code: item.defect_code }),
+        });
+      }
+      synced += 1;
+    } catch (e) {
+      item.retries = (item.retries || 0) + 1;
+      item.last_error = e.message || "补传失败";
+      // 业务错误（4xx，如工单不存在）重试也不会成功，但保留给人工处理
+      remain.push(item);
+    }
+  }
+
+  writeQueue(remain);
+  if (synced) {
+    banner(`已补传 ${synced} 条离线记录`, "info");
+    loadRecent();
+  }
+  if (remain.length) {
+    banner(`还有 ${remain.length} 条补传失败，可在队列中查看原因`, "warn");
+  }
+}
+
+/* 队列弹层：显示每条的重试次数与失败原因，支持单条删除 */
+function showQueue() {
+  const queue = readQueue();
+  const old = document.getElementById("queue-modal");
+  if (old) old.remove();
+
+  const modal = document.createElement("div");
+  modal.id = "queue-modal";
+  modal.className = "login-mask";
+  modal.innerHTML = `
+    <div class="login-box">
+      <h2>离线暂存（${queue.length} 条）</h2>
+      <p>联网后会自动补传；补传时为单据打「补录」标记。</p>
+      <div id="queue-list" style="max-height:50vh; overflow:auto; margin-bottom:14px"></div>
+      <button class="btn" onclick="syncQueue().then(()=>showQueue())">立即补传</button>
+      <button class="btn ghost" style="margin-top:8px"
+              onclick="document.getElementById('queue-modal').remove()">关闭</button>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const list = modal.querySelector("#queue-list");
+  if (!queue.length) {
+    list.innerHTML = '<div class="hint">队列为空，所有记录都已上传</div>';
+    return;
+  }
+  queue.forEach((item, idx) => {
+    const row = document.createElement("div");
+    row.className = "list-item";
+    row.innerHTML = `
+      <div>
+        <div>${escapeHtml(item.payload.description.slice(0, 24))}</div>
+        <div class="meta">${escapeHtml(item.payload.work_order_id)}
+          · 重试 ${item.retries || 0} 次
+          ${item.last_error ? "· " + escapeHtml(item.last_error) : ""}</div>
+      </div>
+      <button class="tag" style="border:none; cursor:pointer">删除</button>`;
+    row.querySelector("button").onclick = () => {
+      const q = readQueue();
+      q.splice(idx, 1);
+      writeQueue(q);
+      showQueue();
+    };
+    if ((item.retries || 0) > 5) row.style.color = "#c0392b";
+    list.appendChild(row);
+  });
+}
+
+/* 启动：有令牌先校验有效性，再加载数据 */
+(async function init() {
+  if (!state.token) {
+    document.getElementById("login-mask").classList.remove("hidden");
+    return;
+  }
+  try {
+    const data = await api("/auth/me");
+    if (data.user.role !== "shift_leader") {
+      logout();
+      document.getElementById("login-err").textContent = "该账号不是班组长";
+      document.getElementById("login-err").classList.add("show");
+      return;
+    }
+    state.user = data.user;
+    document.getElementById("login-mask").classList.add("hidden");
+    await boot();
+  } catch (e) {
+    logout();
+  }
+})();
 </script>
 </body>
 </html>
