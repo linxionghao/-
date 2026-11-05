@@ -356,3 +356,27 @@ class TestPhoto:
     def test_path_traversal_token_ignored(self, env):
         """token 严格 hex 校验：路径穿越字符串解析为空，不产生文件。"""
         assert photo_service.resolve_temp("../../secret", env["upload"]) is None
+
+
+# ---------------------------------------------------------------------------
+# 工单校验（移动端失焦调用）
+# ---------------------------------------------------------------------------
+class TestWorkOrderCheck:
+    def test_ok_for_own_line(self, env):
+        view = defect_service.check_work_order(env["conn"], LEADER, "WO-A")
+        assert view["product_name"] == "M8 螺栓"
+        assert view["line_id"] == "line-01"
+
+    def test_other_line_404(self, env):
+        with pytest.raises(ApiError) as ei:
+            defect_service.check_work_order(env["conn"], LEADER, "WO-B")
+        assert ei.value.code == ErrorCode.WORK_ORDER_NOT_FOUND
+
+    def test_empty_rejected(self, env):
+        with pytest.raises(ApiError) as ei:
+            defect_service.check_work_order(env["conn"], LEADER, "  ")
+        assert ei.value.code == ErrorCode.BAD_REQUEST
+
+    def test_qe_can_check_any_line(self, env):
+        assert defect_service.check_work_order(
+            env["conn"], QE, "WO-B")["line_id"] == "line-02"
