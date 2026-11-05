@@ -109,6 +109,8 @@ class TestMeta:
         r = client.get("/api/v1/io/template/lots", headers=_h(client, "qe001"))
         disp = r.headers["content-disposition"]
         assert "filename*=UTF-8''" in disp
+        # ASCII 兜底不能被压成 "_.csv"：老浏览器至少能认出 export.csv
+        assert 'filename="export.csv"' in disp
         assert "%E7%89%A9%E6%96%99%E6%89%B9" in disp        # "物料批" 的百分号编码
 
     def test_template_unknown_dataset(self, client):

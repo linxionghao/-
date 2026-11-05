@@ -72,6 +72,7 @@
     <a href="/admin/attributions" class="{% block nav_attr %}{% endblock %}">归因审批</a>
     <a href="/admin/analytics" class="{% block nav_analytics %}{% endblock %}">质量看板</a>
     <a href="/admin/genealogy" class="{% block nav_genealogy %}{% endblock %}">批次追溯</a>
+    <a href="/admin/data" class="{% block nav_data %}{% endblock %}">数据导入导出</a>
     <div class="who">
       {{ user.display_name }}（{{ user.role == 'quality_manager' and '质量主管' or user.role }}）<br>
       <a href="/admin/logout" style="color:#8fa1b5">退出登录</a>

@@ -341,3 +341,30 @@ async def genealogy_page(request: Request):
         request=request, name="genealogy.html",
         context={"request": request, "user": user},
     )
+
+
+# ================================================================ 数据导入导出
+@router.get("/data")
+async def data_page(request: Request):
+    """数据导入导出页。
+
+    权限：主管与质量工程师。**班组长不进这页**——导入是唯一能一次写坏
+    主数据表的入口，而现场录入的正确通道是 /m 的单条提交。
+
+    这页的数据全部走 /api/v1/io/*：数据集清单由后端给出（加数据集不用改页面），
+    文件上传必须走 XHR（表单直传拿不到逐行错误清单）。
+    """
+    user = _page_user(request)
+    if user is None:
+        return RedirectResponse("/admin/login", status_code=303)
+    if user["role"] not in ("quality_manager", "quality_engineer"):
+        return HTMLResponse(
+            templates.get_template("forbidden.html").render(
+                {"request": request, "user": user}
+            ),
+            status_code=403,
+        )
+    return templates.TemplateResponse(
+        request=request, name="data.html",
+        context={"request": request, "user": user},
+    )

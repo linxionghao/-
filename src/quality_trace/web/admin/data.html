@@ -1,0 +1,332 @@
+{% extends "base.html" %}
+{% block title %}数据导入导出{% endblock %}
+{% block nav_data %}on{% endblock %}
+
+{% block content %}
+<h1>数据导入导出</h1>
+<p class="muted" style="margin:-10px 0 18px">
+  导入是唯一能一次写坏主数据表的入口，所以流程被拆成"预览 → 确认"两步：
+  预览只校验不写库，确认才落库。导出的文件带 UTF-8 BOM，Excel 双击不会乱码。
+</p>
+
+<div class="tabs">
+  <button class="tab on" data-tab="import">导入数据</button>
+  <button class="tab" data-tab="export">导出数据</button>
+</div>
+
+<!-- ================================================================= 导入 -->
+<div class="pane" id="pane-import">
+  <div class="card">
+    <form class="inline" onsubmit="return false;">
+      <div style="flex:0 0 200px">
+        <label for="i-dataset">导入类型</label>
+        <select id="i-dataset" style="width:100%"></select>
+      </div>
+      <div style="flex:1; min-width:240px">
+        <label for="i-file">选择文件（CSV / TSV，最大 10MB）</label>
+        <input type="file" id="i-file" accept=".csv,.tsv,.txt" style="width:100%">
+      </div>
+      <div style="flex:0 0 auto">
+        <label for="i-delim">分隔符</label>
+        <select id="i-delim">
+          <option value="">自动识别</option>
+          <option value=",">逗号</option>
+          <option value=";">分号</option>
+          <option value="&#9;">制表符</option>
+          <option value="|">竖线</option>
+        </select>
+      </div>
+      <button class="btn ghost" id="btn-template">下载模板</button>
+      <button class="btn" id="btn-preview">① 预览校验</button>
+      <button class="btn" id="btn-commit" disabled>② 确认导入</button>
+    </form>
+    <div class="msg" id="i-msg"></div>
+    <div id="i-hint" class="muted" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card" id="i-result" style="display:none">
+    <h2 style="font-size:15px; margin-bottom:12px">校验结果</h2>
+    <div class="grid" id="i-stats" style="grid-template-columns: repeat(4,1fr); margin-bottom:16px"></div>
+    <div id="i-errors"></div>
+  </div>
+</div>
+
+<!-- ================================================================= 导出 -->
+<div class="pane" id="pane-export" style="display:none">
+  <div class="card">
+    <form class="inline" onsubmit="return false;">
+      <div style="flex:0 0 220px">
+        <label for="e-dataset">导出数据集</label>
+        <select id="e-dataset" style="width:100%"></select>
+      </div>
+      <div style="flex:0 0 130px">
+        <label for="e-format">格式</label>
+        <select id="e-format" style="width:100%">
+          <option value="csv">CSV</option>
+          <option value="xlsx">Excel (xlsx)</option>
+        </select>
+      </div>
+      <div style="flex:0 0 150px" data-param="date_from">
+        <label for="e-from">起始日期</label>
+        <input type="date" id="e-from" style="width:100%">
+      </div>
+      <div style="flex:0 0 150px" data-param="date_to">
+        <label for="e-to">截止日期</label>
+        <input type="date" id="e-to" style="width:100%">
+      </div>
+      <div style="flex:0 0 160px" data-param="dim">
+        <label for="e-dim">帕累托维度</label>
+        <select id="e-dim" style="width:100%"></select>
+      </div>
+      <div style="flex:0 0 150px" data-param="status">
+        <label for="e-status">状态</label>
+        <select id="e-status" style="width:100%">
+          <option value="">全部</option>
+          <option value="pending">待处理</option>
+          <option value="approved">已通过</option>
+          <option value="rejected">已退回</option>
+        </select>
+      </div>
+      <button class="btn" id="btn-export">导出</button>
+    </form>
+    <div class="msg" id="e-msg"></div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:15px; margin-bottom:6px">质量数据包</h2>
+    <p class="muted" style="margin-bottom:14px">
+      一次打包三张表（缺陷明细 + 帕累托 + 供应商记分卡）到一个 xlsx。
+      月末对账时省掉的是三轮"你那份是最新的吗"。
+    </p>
+    <button class="btn ghost" id="btn-bundle">下载数据包</button>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:15px; margin-bottom:10px">接口一览（供脚本调用）</h2>
+    <table>
+      <thead><tr><th style="width:280px">端点</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET /api/v1/io/datasets</code></td><td>可导入/可导出的数据集元信息</td></tr>
+        <tr><td><code>GET /api/v1/io/template/{dataset}</code></td><td>导入模板下载</td></tr>
+        <tr><td><code>POST /api/v1/io/import/preview</code></td><td>只校验不落库</td></tr>
+        <tr><td><code>POST /api/v1/io/import</code></td><td>校验 + 落库</td></tr>
+        <tr><td><code>GET /api/v1/io/export?dataset=…&amp;format=…</code></td><td>单表导出</td></tr>
+        <tr><td><code>GET /api/v1/io/export/bundle</code></td><td>三表打包</td></tr>
+      </tbody>
+    </table>
+    <p class="muted" style="margin-top:10px">
+      脚本调用用 <code>Authorization: Bearer &lt;JWT&gt;</code>；浏览器直接下载走 Cookie。
+    </p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+  .tab { background: #fff; border: 1px solid #dfe4ec; border-radius: 6px;
+         padding: 9px 18px; font-size: 13px; cursor: pointer; color: #4a5568; }
+  .tab.on { background: #2f6fed; color: #fff; border-color: #2f6fed; }
+  .sub { font-size: 11px; color: #98a2b3; }
+  code { background: #f2f4f8; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  .row-bad td { background: #fff7f7; }
+</style>
+<script>
+const $ = s => document.querySelector(s);
+
+function esc(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function msg(el, text, kind) {
+  el.className = 'msg ' + (kind || 'ok');
+  el.textContent = text;
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+  const body = await res.json();
+  if (body.code !== 0) throw new Error(body.message || ('请求失败（' + res.status + '）'));
+  return body.data;
+}
+
+/* ------------------------------------------------------------- Tab 切换 */
+document.querySelectorAll('.tab').forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+    $('#pane-import').style.display = t.dataset.tab === 'import' ? '' : 'none';
+    $('#pane-export').style.display = t.dataset.tab === 'export' ? '' : 'none';
+  };
+});
+
+/* ------------------------------------------------------------- 元信息 */
+let META = null;
+let lastFile = null;
+
+async function loadMeta() {
+  META = await api('/api/v1/io/datasets');
+
+  $('#i-dataset').innerHTML = META.imports
+    .map(d => `<option value="${esc(d.dataset)}">${esc(d.label)}（${esc(d.dataset)}）</option>`)
+    .join('');
+  $('#e-dataset').innerHTML = META.exports
+    .map(d => `<option value="${esc(d.dataset)}">${esc(d.label)}</option>`)
+    .join('');
+  renderHint();
+  syncExportParams();
+}
+
+function renderHint() {
+  const ds = $('#i-dataset').value;
+  const meta = META.imports.find(d => d.dataset === ds);
+  if (!meta) return;
+  $('#i-hint').innerHTML =
+    `列：${meta.columns.map(c => `<code>${esc(c)}</code>`).join(' ')}<br>` +
+    `<span class="sub">${esc(meta.notes)} 表头可以有别名（如「数量」也可写作「不良数量」），自动识别。</span>`;
+}
+
+$('#i-dataset').onchange = () => { renderHint(); resetPreview(); };
+
+/* ------------------------------------------------------------- 模板下载 */
+$('#btn-template').onclick = () => {
+  const ds = $('#i-dataset').value;
+  window.location.href = '/api/v1/io/template/' + encodeURIComponent(ds);
+};
+
+/* ------------------------------------------------------------- 预览 */
+function resetPreview() {
+  lastFile = null;
+  $('#btn-commit').disabled = true;
+  $('#i-result').style.display = 'none';
+}
+
+$('#i-file').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  if (f.size > META.max_bytes) {
+    msg($('#i-msg'), `文件 ${(f.size / 1048576).toFixed(1)}MB 超过上限 10MB`, 'err');
+    e.target.value = '';
+    return;
+  }
+  lastFile = f;
+  $('#btn-commit').disabled = true;
+  $('#i-msg').className = 'msg';
+  $('#i-msg').textContent = '';
+};
+
+async function upload(dryRun) {
+  const f = lastFile || $('#i-file').files[0];
+  if (!f) throw new Error('请先选择文件');
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('dataset', $('#i-dataset').value);
+  const delim = $('#i-delim').value;
+  if (delim) fd.append('delimiter', delim);
+  if (!dryRun) fd.append('allow_partial', 'true');
+  return api(dryRun ? '/api/v1/io/import/preview' : '/api/v1/io/import',
+             { method: 'POST', body: fd });
+}
+
+function renderReport(r) {
+  const cards = [
+    { num: r.total, lbl: '数据行' },
+    { num: r.inserted, lbl: r.dry_run ? '可导入' : '已导入' },
+    { num: r.skipped, lbl: '跳过（已存在）' },
+    { num: r.failed, lbl: '校验失败', cls: r.failed ? 'bad' : '' },
+  ];
+  $('#i-stats').innerHTML = cards.map(c =>
+    `<div class="stat"><div class="num" style="color:${c.cls === 'bad' ? '#b0343c' : '#1f2b3a'}">${c.num}</div>
+     <div class="lbl">${c.lbl}</div></div>`).join('');
+
+  let html = '';
+  if (r.encoding || r.delimiter) {
+    html += `<p class="muted">编码识别为 <code>${esc(r.encoding)}</code>，
+             分隔符 <code>${esc(r.delimiter === '\t' ? '\\t' : r.delimiter)}</code></p>`;
+  }
+  if (r.warnings && r.warnings.length) {
+    html += '<div class="msg warn" style="display:block">' +
+      r.warnings.map(esc).join('<br>') + '</div>';
+  }
+  if (r.errors && r.errors.length) {
+    html += '<table><thead><tr><th style="width:70px">行号</th>' +
+      '<th style="width:110px">字段</th><th>原因</th></tr></thead><tbody>' +
+      r.errors.map(e => `<tr class="row-bad"><td>${e.row || '—'}</td>
+        <td>${esc(e.field)}</td><td>${esc(e.message)}</td></tr>`).join('') +
+      '</tbody></table>';
+  } else if (r.total) {
+    html += '<p class="muted">没有发现问题行。</p>';
+  }
+  $('#i-errors').innerHTML = html;
+  $('#i-result').style.display = '';
+}
+
+$('#btn-preview').onclick = async () => {
+  try {
+    msg($('#i-msg'), '正在校验…', 'warn');
+    const r = await upload(true);
+    renderReport(r);
+    msg($('#i-msg'), r.message, r.failed ? 'warn' : 'ok');
+    // 只有"有可导入行"时才允许确认，避免用户对着 0 行点确认
+    $('#btn-commit').disabled = !r.inserted;
+  } catch (err) {
+    msg($('#i-msg'), err.message, 'err');
+  }
+};
+
+$('#btn-commit').onclick = async () => {
+  try {
+    msg($('#i-msg'), '正在写入…', 'warn');
+    const r = await upload(false);
+    renderReport(r);
+    msg($('#i-msg'), r.message, r.failed ? 'warn' : 'ok');
+    $('#btn-commit').disabled = true;
+  } catch (err) {
+    msg($('#i-msg'), err.message, 'err');
+  }
+};
+
+/* ------------------------------------------------------------- 导出 */
+const DIM_LABELS = {
+  defect_code: '缺陷类型', line_id: '产线', op_code: '工序',
+  severity: '严重度', created_by: '录入人',
+};
+
+$('#e-dim').innerHTML = Object.keys(DIM_LABELS)
+  .map(k => `<option value="${k}">${DIM_LABELS[k]}</option>`).join('');
+
+function syncExportParams() {
+  const ds = $('#e-dataset').value;
+  const meta = (META.exports || []).find(d => d.dataset === ds);
+  const allowed = meta ? meta.params : [];
+  document.querySelectorAll('[data-param]').forEach(el => {
+    el.style.display = allowed.indexOf(el.dataset.param) >= 0 ? '' : 'none';
+  });
+}
+$('#e-dataset').onchange = syncExportParams;
+
+$('#btn-export').onclick = () => {
+  const ds = $('#e-dataset').value;
+  const meta = (META.exports || []).find(d => d.dataset === ds);
+  const allowed = meta ? meta.params : [];
+  const qs = new URLSearchParams();
+  qs.set('dataset', ds);
+  qs.set('format', $('#e-format').value);
+  if (allowed.indexOf('date_from') >= 0 && $('#e-from').value) qs.set('date_from', $('#e-from').value);
+  if (allowed.indexOf('date_to') >= 0 && $('#e-to').value) qs.set('date_to', $('#e-to').value);
+  if (allowed.indexOf('dim') >= 0) qs.set('dim', $('#e-dim').value);
+  if (allowed.indexOf('status') >= 0 && $('#e-status').value) qs.set('status', $('#e-status').value);
+  msg($('#e-msg'), '正在生成…', 'warn');
+  // 用 location 而不是 fetch：浏览器原生下载能正确处理 Content-Disposition
+  window.location.href = '/api/v1/io/export?' + qs.toString();
+  setTimeout(() => { $('#e-msg').className = 'msg'; }, 1500);
+};
+
+$('#btn-bundle').onclick = () => {
+  window.location.href = '/api/v1/io/export/bundle';
+};
+
+loadMeta().catch(err => msg($('#i-msg'), err.message, 'err'));
+</script>
+{% endblock %}

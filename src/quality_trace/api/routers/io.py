@@ -57,12 +57,30 @@ def _attachment(filename: str, data: bytes, mime: str) -> Response:
     RFC 5987 的 `filename*=UTF-8''<pct-encoded>` 是唯一稳的写法，
     但老客户端只认 `filename`，所以两个都给。
     """
-    ascii_fallback = filename.encode("ascii", errors="ignore").decode("ascii") or "export"
+    ascii_fallback = _ascii_name(filename)
     disposition = "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (
         ascii_fallback, quote(filename, safe="")
     )
     return Response(content=data, media_type=mime,
                     headers={"Content-Disposition": disposition})
+
+
+def _ascii_name(filename: str) -> str:
+    """给老客户端准备一个纯 ASCII 文件名。
+
+    直接 `encode('ascii', 'ignore')` 会把「导入模板_工单.csv」压成「_.csv」——
+    用户在旧浏览器里看到的是一堆下标线，还不如 `export.csv`。
+    所以：去掉非 ASCII 后若只剩标点，就退回 `export.<原扩展名>`。
+    """
+    import re
+
+    stem, dot, ext = filename.rpartition(".")
+    if not dot:
+        stem, ext = filename, ""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "", stem).strip("._-")
+    if not cleaned:
+        cleaned = "export"
+    return "%s.%s" % (cleaned, ext) if ext else cleaned
 
 
 # =========================================================== 元信息
