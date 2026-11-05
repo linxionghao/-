@@ -163,3 +163,22 @@ CI（`.github/workflows/ci.yml`）只跑第 1 步 + 编译门禁，因为第 2�
 | 并发写入（多用户同时建单） | SQLite WAL 下需压测才有意义 | 靠唯一约束与幂等键兜底，不做连接池压测 |
 | 移动端真机（iOS Safari） | 无设备 | 只保证 Chrome 移动视口下可用 |
 | 8D 导出的内容正确性 | 依赖 LLM | 导出必须经主管审批 + 带 DRAFT 横幅，人工把关 |
+
+---
+
+## 7. 实测记录（2026-11-05）
+
+环境：Windows 10 · Python 3.9.13（pytest）· Python 3.12（Playwright）· 本机 Chrome headless · 服务 `127.0.0.1:8013`
+
+| 命令 | 结果 |
+|---|---|
+| `python -m pytest -o addopts="" -q` | **189 passed, 1 skipped**（跳过的 1 条是"装了 faiss 才跑"，本机与 CI 都未装） |
+| `bash scripts/smoke_stage3.sh 8013` | **14 通过 / 0 失败** |
+| `bash scripts/smoke_defects.sh 8013` | **18 通过 / 0 失败** |
+| `python scripts/ui_check_pages.py 8011` | 全部页面巡检通过（问答页 + 后台 5 页） |
+| `python scripts/ui_check.py 8011` | 全部通过：登录 → 填单 → 确认缺陷码 → 回执（草稿号 `DF-20261105-0011`，状态文案"已提交，待质量工程师判定"） |
+
+两条与"诚实"有关的备注：
+
+1. **移动端巡检仍有一条资源 404 告警**。两个页面都已加 `<link rel="icon" href="data:,">`，服务端访问日志里也查不到 404 记录，判断是 Chrome 对空白页/新标签的默认图标请求，与业务流程无关；保留在报告里而不是从脚本里屏蔽掉——把告警藏起来比留着它更危险。
+2. **冒烟脚本必须打到"启动命令正确"的服务上**。第一次在 8012 端口尝试时出现 `upstream connect failed (os error 10061)`，原因是启动命令缺 `PYTHONPATH=src`（`ModuleNotFoundError: quality_trace`），进程直接退出、端口无人监听。这类失败会被脚本如实报成 14 项全挂，而不是"静默变成 0 项"——这也说明"断言数会随服务存活情况变化"本身就是一个有效的健康信号。
