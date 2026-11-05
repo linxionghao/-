@@ -380,3 +380,55 @@ class TestWorkOrderCheck:
     def test_qe_can_check_any_line(self, env):
         assert defect_service.check_work_order(
             env["conn"], QE, "WO-B")["line_id"] == "line-02"
+
+
+# ---------------------------------------------------------------------------
+# 未绑定产线的班组长：默认拒绝，绝不退化成全量可见
+# ---------------------------------------------------------------------------
+UNBOUND_LEADER = {"user_id": "sl-099", "role": "shift_leader", "line_id": None}
+
+
+class TestUnboundShiftLeader:
+    """配置漏填 line_id 时，必须 40302 挡住，而不是当成「不限产线」。"""
+
+    def test_list_denied(self, env):
+        with pytest.raises(ApiError) as ei:
+            defect_service.list_for_user(env["conn"], UNBOUND_LEADER)
+        assert ei.value.code == ErrorCode.LINE_FORBIDDEN
+
+    def test_get_denied(self, env):
+        no = _create(env)["defect_no"]
+        with pytest.raises(ApiError) as ei:
+            defect_service.get_for_user(env["conn"], UNBOUND_LEADER, no)
+        assert ei.value.code == ErrorCode.LINE_FORBIDDEN
+
+    def test_create_denied(self, env):
+        with pytest.raises(ApiError) as ei:
+            _create(env, user=UNBOUND_LEADER)
+        assert ei.value.code == ErrorCode.LINE_FORBIDDEN
+
+    def test_confirm_denied(self, env):
+        no = _create(env)["defect_no"]
+        with pytest.raises(ApiError) as ei:
+            defect_service.confirm(
+                env["conn"], user=UNBOUND_LEADER, defect_no=no,
+                defect_code="D-THREAD")
+        assert ei.value.code == ErrorCode.LINE_FORBIDDEN
+
+    def test_work_order_check_denied(self, env):
+        with pytest.raises(ApiError) as ei:
+            defect_service.check_work_order(env["conn"], UNBOUND_LEADER, "WO-A")
+        assert ei.value.code == ErrorCode.LINE_FORBIDDEN
+
+    def test_empty_string_line_treated_as_unbound(self, env):
+        """空串与 None 等价——不能因为写了个 "" 就绕过。"""
+        user = {"user_id": "sl-098", "role": "shift_leader", "line_id": "   "}
+        with pytest.raises(ApiError) as ei:
+            defect_service.list_for_user(env["conn"], user)
+        assert ei.value.code == ErrorCode.LINE_FORBIDDEN
+
+    def test_other_roles_unaffected(self, env):
+        """QE / QM 不受影响：仍是全量视角。"""
+        assert defect_service.line_scope(QE) is None
+        assert defect_service.line_scope({"role": "quality_manager"}) is None
+        assert defect_service.line_scope(LEADER) == "line-01"

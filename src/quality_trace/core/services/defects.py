@@ -104,6 +104,20 @@ def public_view(row: Dict[str, Any], role: str) -> Dict[str, Any]:
     return view
 
 
+def line_scope(user: Dict[str, Any]) -> Optional[str]:
+    """数据级过滤的产线范围：班组长返回自己的产线，其余角色返回 None（全量）。
+
+    班组长**未绑定产线**时一律 40302，绝不退化成「看全量」。
+    安全相关的默认值必须是拒绝：配置漏填一个 line_id，不该变成越权。
+    """
+    if user.get("role") != "shift_leader":
+        return None
+    line_id = (user.get("line_id") or "").strip()
+    if not line_id:
+        raise ApiError(ErrorCode.LINE_FORBIDDEN)
+    return line_id
+
+
 def _check_work_order(conn, work_order_id: str, line_id: Optional[str]) -> Dict:
     """工单必须存在，且（班组长）必须属于本产线——否则 40406，不泄露他线工单。"""
     row = conn.execute(
@@ -128,7 +142,7 @@ def check_work_order(
     work_order_id = (work_order_id or "").strip()
     if not work_order_id:
         raise ApiError(ErrorCode.BAD_REQUEST, "工单号不能为空")
-    line_id = user.get("line_id") if user.get("role") == "shift_leader" else None
+    line_id = line_scope(user)
     order = _check_work_order(conn, work_order_id, line_id)
     return {
         "work_order_id": order["work_order_id"],
@@ -184,8 +198,8 @@ def create_draft(
             })
             return view
 
-    # ---- 3) 工单校验（班组长只能录本线工单）----
-    line_id = user.get("line_id") or None
+    # ---- 3) 工单校验（班组长只能录本线工单；QE 代录时取工单所属产线）----
+    line_id = line_scope(user)
     order = _check_work_order(conn, work_order_id, line_id)
     line_id = line_id or order["line_id"]
 
@@ -265,10 +279,11 @@ def confirm(
     if not defect_code:
         raise ApiError(ErrorCode.BAD_REQUEST, "请选择缺陷码后再提交")
 
+    line_id = line_scope(user)
     row = repo.get_defect(conn, defect_no)
     if row is None:
         raise ApiError(ErrorCode.DEFECT_NOT_FOUND)
-    if user.get("role") == "shift_leader" and row["line_id"] != user.get("line_id"):
+    if line_id and row["line_id"] != line_id:
         raise ApiError(ErrorCode.DEFECT_NOT_FOUND)
 
     code_row = repo.get_defect_code(conn, defect_code)
@@ -287,16 +302,17 @@ def confirm(
 
 def list_for_user(conn, user: Dict[str, Any], limit: int = 50) -> List[Dict]:
     """列表：班组长只查本线（SQL 层过滤），字段再做一次白名单裁剪。"""
-    line_id = user.get("line_id") if user.get("role") == "shift_leader" else None
+    line_id = line_scope(user)
     rows = repo.list_defects(conn, line_id=line_id, limit=limit)
     return [public_view(r, user.get("role", "")) for r in rows]
 
 
 def get_for_user(conn, user: Dict[str, Any], defect_no: str) -> Dict[str, Any]:
     """详情：他线单据对班组长表现为「不存在」。"""
+    line_id = line_scope(user)
     row = repo.get_defect(conn, defect_no)
     if row is None:
         raise ApiError(ErrorCode.DEFECT_NOT_FOUND)
-    if user.get("role") == "shift_leader" and row["line_id"] != user.get("line_id"):
+    if line_id and row["line_id"] != line_id:
         raise ApiError(ErrorCode.DEFECT_NOT_FOUND)
     return public_view(row, user.get("role", ""))
