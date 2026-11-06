@@ -282,6 +282,27 @@ SCENES: Dict[str, Dict[str, Any]] = {
 # 生成单个场景文档
 # --------------------------------------------------------------------------- #
 
+def clean_actual(raw: str) -> str:
+    """把响应摘要压成表格里读得下去的一行。
+
+    原始摘要形如 ``200 {"llm_key_ready": false, "index_ready": true, ...}``。
+    直接放进 2.7cm 的单元格会撑成十行，读者只会看到一堆引号和花括号。
+    这里去掉 JSON 结构符、只留键值，并压缩到一行。
+    """
+    import re
+
+    s = str(raw)
+    # 去掉结构符，键值之间用中点分隔
+    s = re.sub(r'[{}"\[\]]', "", s)
+    s = re.sub(r":\s*", "：", s)
+    s = re.sub(r",\s*", "；", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = s.replace("；；", "；").replace("：；", "；")
+    if len(s) > 64:
+        s = s[:62].rstrip("；： ") + "…"
+    return s
+
+
 def build_scene_doc(key: str, meta: Dict[str, Any], data: Dict[str, Any]) -> Path:
     doc = Doc(
         TEST_DIR / meta["file"],
@@ -336,14 +357,14 @@ def build_scene_doc(key: str, meta: Dict[str, Any], data: Dict[str, Any]) -> Pat
         lat = "<1" if c["latency_ms"] < 1 else str(c["latency_ms"])
         rows.append([
             c["cid"], c["name"], c["layer"], c["input_desc"],
-            c["expect"], c["actual"], c["verdict"], lat,
+            c["expect"], clean_actual(c["actual"]), c["verdict"], lat,
         ])
 
     doc.table(
         ["编号", "用例", "层", "输入", "预期", "实测", "判定", "耗时"],
         rows,
-        widths=[1.3, 3.0, 1.2, 2.9, 2.9, 2.7, 1.1, 1.0],
-        font_size=7.5,
+        widths=[1.1, 2.5, 1.2, 2.6, 2.2, 2.9, 1.0, 1.1],
+        font_size=7,
         align_center_cols=(0, 2, 6, 7),
     )
     doc.p("上表实测列为真实响应的截断文本，完整的响应体与断言证据见 test/_evidence.json 的证据字段。",

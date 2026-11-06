@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
@@ -59,6 +60,32 @@ def _set_run_font(run, *, name: str, size: float, bold: bool = False,
     rfonts.set(qn("w:eastAsia"), name)
     rfonts.set(qn("w:ascii"), en)
     rfonts.set(qn("w:hAnsi"), en)
+
+
+#: 行内标记：**粗体** 与 `代码`。用非贪婪匹配，避免一行里多个粗体被整段吞掉。
+INLINE_RE = re.compile(r"(\*\*.+?\*\*|`[^`]+`)")
+
+
+def _add_rich(para, text: str, *, size: float, bold: bool = False,
+              color: Optional[str] = None, name: str = BODY_FONT) -> None:
+    """把一段带 **粗体** / `代码` 标记的文本拆成多个 run 写入段落。
+
+    单独抽出来是因为段落、列表项、表格单元格都需要同一套行内解析——
+    之前只有段落做了 `**` 分割，列表和表格里的标记会原样露出星号和反引号。
+    """
+    for token in INLINE_RE.split(str(text)):
+        if not token:
+            continue
+        if len(token) > 4 and token.startswith("**") and token.endswith("**"):
+            run = para.add_run(token[2:-2])
+            _set_run_font(run, name=name, size=size, bold=True, color=color)
+        elif len(token) > 2 and token.startswith("`") and token.endswith("`"):
+            run = para.add_run(token[1:-1])
+            _set_run_font(run, name=name, size=size, bold=bold, color="34506B",
+                          en="Consolas")
+        else:
+            run = para.add_run(token)
+            _set_run_font(run, name=name, size=size, bold=bold, color=color)
 
 
 def _para_border_bottom(paragraph, color: str = "D0D3D9", sz: int = 4) -> None:
@@ -239,13 +266,7 @@ class Doc:
         if indent:
             para.paragraph_format.first_line_indent = Pt(BODY_PT * 2)
         para.paragraph_format.space_after = Pt(space_after)
-        # 支持 **粗体** 行内标记
-        for i, seg in enumerate(text.split("**")):
-            if not seg:
-                continue
-            run = para.add_run(seg)
-            _set_run_font(run, name=BODY_FONT, size=size,
-                          bold=bold or (i % 2 == 1), color=color)
+        _add_rich(para, text, size=size, bold=bold, color=color)
 
     def bullets(self, items: Iterable[str], *, marker: str = "·") -> None:
         for it in items:
@@ -253,8 +274,9 @@ class Doc:
             para.paragraph_format.left_indent = Pt(BODY_PT * 2)
             para.paragraph_format.first_line_indent = Pt(-BODY_PT)
             para.paragraph_format.space_after = Pt(2)
-            run = para.add_run(f"{marker} {it}")
+            run = para.add_run(f"{marker} ")
             _set_run_font(run, name=BODY_FONT, size=BODY_PT)
+            _add_rich(para, it, size=BODY_PT)
 
     def code(self, text: str) -> None:
         for line in text.splitlines():
@@ -310,6 +332,8 @@ class Doc:
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             para.paragraph_format.space_before = Pt(2)
             para.paragraph_format.space_after = Pt(2)
+            # 表头与首行数据保持同页，避免表头孤零零留在页脚
+            para.paragraph_format.keep_with_next = True
             run = para.add_run(str(text))
             _set_run_font(run, name=HEAD_FONT, size=font_size, bold=True, color="1F2937")
 
@@ -330,8 +354,7 @@ class Doc:
                 para.paragraph_format.space_before = Pt(2)
                 para.paragraph_format.space_after = Pt(2)
                 value = "" if ci >= len(row) else str(row[ci])
-                run = para.add_run(value)
-                _set_run_font(run, name=BODY_FONT, size=font_size)
+                _add_rich(para, value, size=font_size)
 
         # 表后留一点空
         self.doc.add_paragraph().paragraph_format.space_after = Pt(2)
@@ -360,8 +383,7 @@ class Doc:
         para.paragraph_format.left_indent = Pt(8)
         para.paragraph_format.space_before = Pt(5)
         para.paragraph_format.space_after = Pt(5)
-        run = para.add_run(text)
-        _set_run_font(run, name=BODY_FONT, size=9.5, color="374151")
+        _add_rich(para, text, size=9.5, color="374151")
 
     def save(self) -> Path:
         self.path.parent.mkdir(parents=True, exist_ok=True)
