@@ -28,6 +28,24 @@
   - `GET /msa/consistency` **人员读数一致性检查**（不是 GR&R）：产线数据每件只测一次，重复性与零件变差无法分离，硬算 %GRR 会到 90% 以上且结论是算法制造的
   - 8 个接口 #57–#64 + 页面 `admin/msa.html`（先给覆盖率与缺口，再给单次研究细节）
 - **权限矩阵回归** `tests/test_permission_matrix.py` 99 例：端点清单驱动 + 元规则（新端点没断言就让构建失败）
+
+### 新增（工具链：每 5 分钟自动提交推送）
+
+- `scripts/git_autosync.py` + Windows 计划任务 `QualityTrace-GitAutoSync`
+  - 平台内置定时任务最小粒度是 1 小时，所以这一条走系统计划任务
+  - 推送转交 `github-web-skill` 的 `gh.py`：清掉环境里失效的 `http_proxy` 后 direct 可用，失败退到 pin 钉 IP；按输出 JSON 判成败而非返回码
+  - 排他锁（10 分钟过期可接管，防 `.git/index.lock` 碰撞丢改动）、按改动落点生成提交前缀、冲突中途拒提交
+  - 修两个真 bug：`.strip()` 吃掉 `git status --porcelain` 首行状态位空格导致路径少切一刀（`docs/` → `ocs/`）；`pythonw.exe` 下 `sys.stdout` 为 None
+
+### 修复（文档与实测数字对齐）
+
+- `docs/test-plan.md`：214 passed → **671 passed / 17 skipped**，覆盖率 80%/88% → **86%/91%**
+  - 逐条说明 17 条 skip 的构成（16 条权限矩阵"断言不适用" + 1 条 faiss 未装），避免被读成"17 个功能没测"
+  - 巡检脚本 2 个 → 6 个，写明断言是"结构 + 性质"（只数 SVG 的 `rect` 会把折线图误判成空图）
+- `docs/acceptance.md`：**正向围堵从 ⬜ 未实现改为 ✅ 达成**（批次谱系已落地，带 `coverage` 前提）；
+  反向溯源证据更新为 `GET /genealogy/defects/{no}/backward`，缺口收敛到"仍缺设备维度"；
+  总结从"4 达成 / 3 部分 / 1 未实现"改为"**5 达成 / 3 部分 / 0 未实现**"
+- `README.md`：补 §4.6–§4.9 四模块、§9.5 自动同步、§8.5/8.6 接口表、十六张表说明
 - 演示数据：14 天跨日实测值（3 人 × 3 班次）、14 天缺陷单、14 批物料含 27 条领料关系、两次 MSA（一合格一不合格）
 - 页面巡检脚本：`ui_check_analytics.py`(14) / `ui_check_genealogy.py`(12) / `ui_check_data.py`(15) / `ui_check_msa.py`(23)
 - 文档：`docs/api.md` 扩至第三部分（§11–§16，含 74 端点总表）、`docs/data-model.md` 增至 16 表并补 5 组查询、`docs/permissions.md` 增至 64 接口矩阵

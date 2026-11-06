@@ -575,6 +575,7 @@ SSE 事件序列：`status`（正在检索依据…）→ `sources`（引用数�
 | 接口冒烟 | `bash scripts/smoke_stage3.sh` `/` `smoke_defects.sh` | 真实服务上 33 项断言全通过 |
 | 页面巡检 | `ui_check*.py` 六个脚本 | 真实 Chrome 里页面无 JS 异常、流程可走通（**共 96 项**） |
 | 一键闭环 | `python scripts/demo_closed_loop.py` | 临时库上跑完认证→检索→录入→归因→审计 15 项，不污染演示数据 |
+| 自动入库 | `python scripts/git_autosync.py` | 每 5 分钟提交并推送；`--status` 看最近记录，`--dry-run` 只报告 |
 
 ### 9.2 测试覆盖的重点
 
@@ -635,6 +636,37 @@ python scripts/ui_check_msa.py 8000 --shot         # MSA 23 项
 
 ---
 
+### 9.5 自动同步（每 5 分钟）
+
+改动频繁时用一个 Windows 计划任务（`QualityTrace-GitAutoSync`）每 5 分钟跑一次
+`scripts/git_autosync.py`，把工作区改动提交并推到 GitHub。
+平台的定时任务最小粒度是 1 小时，所以这一条走系统计划任务，不是内置调度。
+
+```text
+Get-ScheduledTask -TaskName "QualityTrace-GitAutoSync"                      # 看状态
+Unregister-ScheduledTask -TaskName "QualityTrace-GitAutoSync" -Confirm:$false  # 停掉
+python scripts/git_autosync.py --status                                     # 最近 20 条记录
+```
+
+这个脚本值得说的不是"它会提交"，而是它躲开的三种失败：
+
+1. **推送会静默失败**。本机直连 `github.com:443` 被阻断，环境里的 `http_proxy`
+   指向一个连不上的代理（`CONNECT tunnel failed, 502`）。脚本把推送转交
+   `github-web-skill` 的 `gh.py`（清掉代理走 direct，不通再退到 pin 钉 IP），
+   并按它输出的 JSON 判成败——只看返回码会把"失败但带后续建议"当成成功。
+2. **会撞锁**。5 分钟一轮、人也在提交，不排他就会撞 `.git/index.lock`，
+   git 报错退出、那一轮改动静默消失。锁带 10 分钟过期，崩了能自动接管，
+   避免"任务还在跑却永远不干活"这种最难发现的状态。
+3. **会污染历史**。每 5 分钟自动提交最容易产出 200 条 `update`。
+   脚本按改动落点生成前缀（`feat(io)` / `docs` / `test`…），
+   并检测 `MERGE_HEAD` / rebase 目录——冲突中途不提交，
+   否则 `<<<<<<<` 标记会被写进历史。
+
+已知代价：自动提交的信息不如手写的精确，历史里会混着
+`chore: 自动同步 N 个文件` 这类提交。作业结束后应当停掉计划任务。
+
+---
+
 ## 10. 工程约定与目录结构
 
 ### 10.1 目录
@@ -667,6 +699,7 @@ quality-trace/
 │   ├── smoke_stage3.sh           # 审计/审批接口冒烟
 │   ├── smoke_defects.sh          # 录入端接口冒烟
 │   ├── demo_closed_loop.py       # 一键闭环（临时库，15 项断言）
+│   ├── git_autosync.py           # 每 5 分钟自动提交并推送（计划任务入口）
 │   └── ui_check*.py              # 真实浏览器巡检（6 个脚本）
 ├── src/quality_trace/
 │   ├── api/                      # 入口层：app / deps / sse / routers（9 个路由模块）
