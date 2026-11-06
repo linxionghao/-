@@ -28,6 +28,8 @@ data/trace.db-shm
 data/trace.db-wal
 data/uploads/
 data/phase1_index/
+# 兜底：源码目录下不应出现任何运行时数据（历史上路径推导少一级曾误写入）
+src/data/
 # 例外：切片索引是单元测试与开箱演示的输入（--ingest 可重建，但保留可免装依赖）
 !data/phase1_index/
 data/phase1_index/*

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import Response
 
 from quality_trace.api.deps import (
+    REPO_ROOT,
     get_config,
     get_db,
     get_emb_key,
@@ -37,8 +38,12 @@ _qm_only = require_roles("quality_manager")
 
 
 def _repo_root() -> Path:
-    """仓库根目录（上传文件留档目录的基准）。"""
-    return Path(__file__).resolve().parents[3]
+    """仓库根目录（上传文件留档目录的基准）。
+
+    统一取 deps.REPO_ROOT：本模块位于 api/routers/ 下，比 deps.py 多一层，
+    自行推导容易少算一级而落到 src/ 里，导致知识库上传写进源码目录。
+    """
+    return REPO_ROOT
 
 
 def _index_dir(cfg: Dict[str, Any]) -> Path:
