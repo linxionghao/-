@@ -10,6 +10,8 @@
 
 ## 1. 表清单与归属域
 
+共 16 张表，分 7 个域。
+
 | # | 表 | 域 | 作用 | 关键约束 |
 |---|---|---|---|---|
 | 1 | `sys_user` | 组织 | 用户与角色、产线绑定 | `username` 唯一；`role ∈ {quality_engineer, shift_leader, quality_manager}` |
@@ -24,12 +26,124 @@
 | 10 | `defect_item` | 生产 | 缺陷单（双时间 + 补录 + 幂等键） | `client_draft_id` 唯一 |
 | 11 | `attribution_order` | 归因 | 归因单 + 审批状态 + 8D 缓存 | `status ∈ {submitted, approved, rejected}` |
 | 12 | `defect_code` | 主数据 | 缺陷码字典（归一化候选来源） | `code` 主键 |
+| 13 | `meas_record` | 计量 | 计量型实测值（SPC 原料） | `(item_code, line_id, occurred_at)` 索引；`usl/lsl` 随行存 |
+| 14 | `material_lot` | 追溯 | 物料批（供应商批号 + 数量 + 状态） | `lot_id` 主键；`supplier_lot` 与内部批号分离 |
+| 15 | `lot_consumption` | 追溯 | 领料关系（批 × 工单，多对多） | `(lot_id, work_order_id, op_code)` 唯一 |
+| 16 | `msa_study` | 计量 | MSA 研究留档（原始读数 + 结论快照） | `raw_json` 与 `result_json` 双存，不可只留一个 |
 
 与设计稿的差异（都是减法，不是偷偷加表）：
 
 - 设计稿的 `retrieval_log` 未单独建表，检索命中直接落在 `chat_message.retrieved_json` + `chat_message.query_id`，少一张表少一次写入；
-- 设计稿的批次谱系（`batch` / `material_lot` / `process_record`）留到阶段 4，本阶段 `work_order` 只保留 `line_id` 与 `planned_qty` 两个真正被用到的字段；
-- 缺陷码字典 `defect_code` 是设计稿之外的**第 12 张**，因为描述归一化必须有一个可维护的码表作候选来源，否则只能硬编码在代码里。
+- 设计稿的 `process_record` 未建：过程参数（温度/压力/节拍）目前没有采集来源，
+  建一张永远为空的表只会让人误以为"这里有数据"；等 MES 接入时再加；
+- 缺陷码字典 `defect_code` 是设计稿之外的**第 12 张**，因为描述归一化必须有一个可维护的码表作候选来源，否则只能硬编码在代码里；
+- 后四张（13–16）是阶段 4/5/6 新增，分别对应"能算能力指数"、"能反查到料"、"能说清尺子准不准"三件事，
+  每张表都有一组具体的查询在用它，不存在"为将来预留"的空表。
+
+---
+
+## 1.1 四张新表的建模取舍
+
+### `meas_record`：规格限为什么要逐行存
+
+```sql
+CREATE TABLE meas_record (
+    record_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_code     TEXT NOT NULL,
+    value         REAL NOT NULL,
+    line_id       TEXT NOT NULL,
+    work_order_id TEXT,
+    op_code       TEXT,
+    subgroup_no   INTEGER NOT NULL DEFAULT 1,
+    unit          TEXT NOT NULL DEFAULT 'mm',
+    usl           REAL,              -- 上规格限（当时）
+    lsl           REAL,              -- 下规格限（当时）
+    gauge         TEXT,              -- 量具编号
+    operator      TEXT,              -- 测量人
+    occurred_at   TEXT NOT NULL,     -- 业务时间（抽检时刻）
+    recorded_at   TEXT NOT NULL      -- 记录时间
+);
+```
+
+`usl`/`lsl` 跟着每一行存，不在 `item_code` 上维护一张"当前规格表"。
+理由：规格是会改的（客户放宽公差、工程变更），三个月后回头算 Cpk
+必须用**当时**的规格；读当前主数据会把新旧数据混在同一个分母下，
+算出的 Cpk 既不是过去的也不是现在的。
+
+`operator` 也在这里，而不是只记在工单上：MSA 的一致性检查要按人分组，
+测量人必须落到读数这一行。
+
+`subgroup_no` 是"同一次抽检"的编号。X̄-R 图依赖它切子组，
+空着或用时间戳临时切分都会把子组切错——子组切错，控制限就错。
+
+### `material_lot` × `lot_consumption`：多对多，不是树
+
+```sql
+CREATE TABLE material_lot (
+    lot_id        TEXT PRIMARY KEY,   -- 内部批号
+    material_code TEXT NOT NULL,
+    material_name TEXT NOT NULL,
+    supplier      TEXT,
+    supplier_lot  TEXT,               -- 供应商批号（和内部批号不是一个东西）
+    qty           REAL NOT NULL DEFAULT 0,
+    unit          TEXT NOT NULL DEFAULT 'kg',
+    status        TEXT NOT NULL DEFAULT 'in_use',  -- in_use / consumed / quarantined
+    occurred_at   TEXT NOT NULL,
+    recorded_at   TEXT NOT NULL
+);
+
+CREATE TABLE lot_consumption (
+    lot_id        TEXT NOT NULL,
+    work_order_id TEXT NOT NULL,
+    op_code       TEXT,
+    qty_used      REAL NOT NULL DEFAULT 0,
+    occurred_at   TEXT NOT NULL,
+    recorded_at   TEXT NOT NULL,
+    UNIQUE (lot_id, work_order_id, op_code)
+);
+```
+
+一批料投多张工单，一张工单吃多批料——这是网状结构。用 `parent_id`
+建树会在第二张工单上直接撞墙，因为一批料有两个"父"。
+
+`supplier_lot` 与 `lot_id` 分开是关键：供应商的批号只在他们的体系内唯一，
+两家供应商可能都叫 `20261015A`。混用会导致反查时把两家的料算成一批。
+
+`UNIQUE (lot_id, work_order_id, op_code)` 带 `op_code` 是因为同一批料
+可能在同一张工单上用两次（先粗加工再精加工），这不是重复记录。
+
+---
+
+## 1.2 `msa_study`：为什么要留两份 JSON
+
+```sql
+CREATE TABLE msa_study (
+    study_id    TEXT PRIMARY KEY,
+    item_code   TEXT NOT NULL,
+    gauge       TEXT,
+    line_id     TEXT,
+    tolerance   REAL,                -- 公差带宽，可空
+    design_json TEXT NOT NULL,       -- 评价人数 / 零件数 / 试测次数
+    raw_json    TEXT NOT NULL,       -- 原始读数（可重算）
+    result_json TEXT NOT NULL,       -- 计算结论快照（复核用）
+    verdict     TEXT NOT NULL,
+    pct_grr     REAL,
+    ndc         REAL,
+    source      TEXT NOT NULL DEFAULT 'manual',
+    created_by  TEXT,
+    occurred_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+```
+
+`raw_json` 和 `result_json` 都存，不是冗余：
+
+- `result_json` 回答"当时签字时看到的数字是多少"。半年后有人重跑一遍
+  发现结果变了，能拿快照解释；
+- `raw_json` 回答"换个算法会算出什么"。`recompute` 用它重算，
+  **只并排返回新旧，不覆盖归档**——覆盖会让"当时凭什么签字"永久丢失。
+
+只留一个都不行：只留结果无法重算，只留原始读数无法证明当时算过。
 
 ---
 
@@ -202,6 +316,98 @@ repo.list_recent_messages(conn, session_id, limit=12) # 6 轮 = 12 条（拼提�
 ```
 
 `build_history()` 必须在**写入本轮用户消息之前**取快照，否则当前问题会既出现在 `history` 里、又出现在 `question` 里，模型会看到同一个问题两遍；而且刚插入的用户消息后面没有 assistant 回复，还会在消息序列里留下一个空的 assistant 位。这个 bug 踩过一次，修法是把快照提前，不是什么精妙逻辑。
+
+### 6.7 按子组切分实测值（控制图的输入）
+
+```sql
+SELECT subgroup_no,
+       COUNT(*)          AS n,
+       AVG(value)        AS xbar,
+       MAX(value) - MIN(value) AS r
+  FROM meas_record
+ WHERE item_code = ? AND line_id = ?
+   AND occurred_at >= ? AND occurred_at < ?
+ GROUP BY subgroup_no
+ ORDER BY MIN(occurred_at);
+```
+
+`n` 必须一起取出来：子组大小不一致时不能算 R̄（X̄-R 图的系数表按 n 查），
+服务层据此返回 `need_regroup: true`，而不是硬算一个错的控制限。
+
+### 6.8 反向追溯：缺陷单 → 工单 → 物料批
+
+```sql
+-- 一、缺陷单挂在哪张工单上
+SELECT work_order_id FROM defect_item WHERE defect_no = ?;
+
+-- 二、这张工单吃了哪些料
+SELECT l.lot_id, l.material_code, l.supplier, l.supplier_lot, l.status
+  FROM lot_consumption c
+  JOIN material_lot l ON l.lot_id = c.lot_id
+ WHERE c.work_order_id = ?;
+
+-- 三、每批料还进了多少张别的工单（可疑度排序的依据）
+SELECT lot_id, COUNT(DISTINCT work_order_id) AS other_orders
+  FROM lot_consumption
+ WHERE lot_id IN (...) AND work_order_id <> ?
+ GROUP BY lot_id;
+```
+
+第三步是可疑度排序的核心。没有它，"这批料可疑"对每一批料都成立，
+排序退化成噪声。
+
+### 6.9 前向追溯：批 → 工单 → 缺陷，以及覆盖率
+
+```sql
+SELECT c.work_order_id, w.product_name, c.qty_used,
+       (SELECT COUNT(*) FROM defect_item d
+         WHERE d.work_order_id = c.work_order_id) AS defects
+  FROM lot_consumption c
+  LEFT JOIN work_order w ON w.work_order_id = c.work_order_id
+ WHERE c.lot_id = ?;
+```
+
+覆盖率 = 有 `work_order_id` 的领料记录 / 全部领料记录。
+小于 1 时必须告警：不完整的前向追溯**只能说明"查到这些"，
+不能说明"只有这些"**——把不完整说成完整是追溯功能最危险的失败方式。
+
+### 6.10 有实测值但从未做过 MSA 的项目
+
+```sql
+SELECT m.item_code, m.line_id, COUNT(*) AS records,
+       MIN(m.occurred_at) AS first_at, MAX(m.occurred_at) AS last_at
+  FROM meas_record m
+ WHERE NOT EXISTS (SELECT 1 FROM msa_study s WHERE s.item_code = m.item_code)
+ GROUP BY m.item_code, m.line_id
+ ORDER BY records DESC;
+```
+
+`NOT EXISTS` 而不是 `LEFT JOIN ... IS NULL`：后者在 `msa_study` 有多条
+同项目记录时会放大行数，`COUNT(*)` 直接算错。
+
+### 6.11 人员一致性检查的取数
+
+```sql
+SELECT operator, work_order_id, COUNT(*) AS n, AVG(value) AS mean,
+       -- 组内标准差用样本口径（n-1）
+       SQRT(SUM((value - (SELECT AVG(v2.value) FROM meas_record v2
+                           WHERE v2.operator = m.operator
+                             AND v2.work_order_id = m.work_order_id)) *
+                (value - (SELECT AVG(v3.value) FROM meas_record v3
+                           WHERE v3.operator = m.operator
+                             AND v3.work_order_id = m.work_order_id)))
+            / (COUNT(*) - 1)) AS sd_within
+  FROM meas_record m
+ WHERE item_code = ? AND operator IS NOT NULL AND work_order_id IS NOT NULL
+ GROUP BY operator, work_order_id
+HAVING COUNT(*) >= 3;
+```
+
+`HAVING COUNT(*) >= 3` 是必要的门槛：一个人在同一张工单上只测了 1 件时，
+他的"均值"就是那一个数，和别人的均值比较毫无统计意义。
+
+实际代码里这一步在 Python 侧用 `build_cells()` 完成（相关子查询太慢），
+SQL 只负责按 `(operator, work_order_id)` 分组取原始值。
 
 ---
 

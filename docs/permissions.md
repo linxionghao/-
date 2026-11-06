@@ -177,16 +177,75 @@ def public_view(row, role):
 
 服务层的 `create_draft` 其实支持质量工程师代录（QE 建单时产线取**工单所属产线**，不接受客户端传值，`tests/test_defects.py::test_qe_uses_work_order_line` 覆盖），但**接口层没有对 QE 放开**：网页端的代录入口一旦存在，就等于给了一个"可往任意产线写单"的入口，而代录是低频操作，走脚本或由主管在后台处理更合适。权限收紧时宁可留一个"以后再加"的缺口，也不要先开一个没人审计的写入面。
 
-### 2.5 页面
+### 2.5 统计、追溯、数据交换（QM + QE）
 
-页面级权限与接口级独立实现（`admin_pages._require_manager()` 读 Cookie 里的 JWT），因为页面走的是浏览器 Cookie 通道，不能依赖前端 JS 加 `Authorization` 头。
+这四个模块（#32–#64）的接口权限都是 `require_roles("quality_manager", "quality_engineer")`，
+班组长一律 403。理由分三块，不是一句"管理类功能"：
+
+| # | 接口 | QE | SL | QM | 备注 |
+|---|---|---|---|---|---|
+| 32–42 | `/analytics/*` | ✓ | — | ✓ | SL 即使放开也会被覆写 `line_id`；未绑定产线 → 40302 |
+| 43–50 | `/genealogy/*` | ✓ | — | ✓ | 前向影响面跨线，不给现场 |
+| 51–56 | `/io/*` | ✓ | — | ✓ | **导入是唯一能一次写坏主数据的入口** |
+| 57–64 | `/msa/*` | ✓ | — | ✓ | 班组长看到"尺子不合格"只会今天不测了 |
+
+三条具体理由：
+
+1. **统计口径需要判断力**。`defect_rate` 用件数还是单数、`dim` 用缺陷码还是工序，
+   不同选法给出的结论可能相反。把这种选择权交给现场，等于把
+   "这个月质量好不好"变成一个随手可改的数字。
+2. **导入没有确认步骤**。现场录入走 `/defects` 有两步（草稿 → 人工确认），
+   导入是一步写几千行。这条通道必须比现场录入更严，不是更松。
+3. **MSA 的结论会被误用**。%GRR 不合格的正确反应是立项改量具，
+   而现场最直接的反应是"那我今天别测了"。结论要给能处置的人。
+
+数据层过滤（第二层防线）在这四个模块里同样生效：
+
+```python
+def _scope(user, line_id):
+    """SL 的 line_id 被覆写成自己的产线；未绑定直接 40302。"""
+    if user["role"] == "shift_leader":
+        if not user.get("line_id"):
+            raise ApiError(ErrorCode.LINE_NOT_BOUND)   # 40302
+        return user["line_id"]
+    return line_id
+```
+
+注意这里**不是**"SL 传什么就过滤什么"：如果写成 `line_id = line_id or user["line_id"]`，
+SL 显式传一个别线 ID 就能绕过。必须是覆写，不是补默认值。
+
+### 2.6 页面
+
+页面级权限与接口级独立实现（`admin_pages._require_manager()` 读 Cookie 里的 JWT），
+因为页面走的是浏览器 Cookie 通道，不能依赖前端 JS 加 `Authorization` 头。
+
+页面权限分两档：
 
 | 路径 | 谁能打开 | 打不开时 |
 |---|---|---|
 | `/`（问答） | QE | 跳 `/admin/login` |
 | `/m`（移动录入） | SL | 页内登录浮层（不跳转，避免丢失已填内容） |
 | `/admin/login` | 匿名 | —— |
-| `/admin/*` 其余 5 页 | QM | `/admin/forbidden`（403 页面，不跳登录，避免"登录了还是打不开"的困惑） |
+| `/admin`（概览） | QM | `/admin/forbidden`（403 页面，不跳登录，避免"登录了还是打不开"的困惑） |
+| `/admin/documents` | QM | 同上 |
+| `/admin/prompts` | QM | 同上 |
+| `/admin/audit` | QM | 同上 |
+| `/admin/attributions` | QM | 同上 |
+| `/admin/attributions/{id}` | QM | 同上 |
+| `/admin/analytics` | QM + QE | 同上 |
+| `/admin/genealogy` | QM + QE | 同上 |
+| `/admin/msa` | QM + QE | 同上 |
+| `/admin/data` | QM + QE | 同上 |
+
+**页面权限比接口权限更严，有一处刻意的落差**：QE 能调
+`GET /admin/attributions`（看自己提交的归因单），但打不开
+`/admin/attributions` 页面。原因是那个页面的列表默认是全量的，
+详情页还带审批按钮——把审批按钮渲染给 QE 再靠 JS 禁用，是最容易被
+"审查元素"绕过的做法。QE 看归因状态走接口或看板，不走这个页面。
+
+反向的落差也存在：`/admin/audit` 页面的接口是 QM 专属，
+但页面本身也做了 QM 检查——两层都做不是冗余，是防止以后接口权限放宽时
+页面忘了同步。
 
 ---
 
