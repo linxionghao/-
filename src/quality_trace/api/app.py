@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 
 from quality_trace.api.deps import WEB_DIR, load_app_config
+from quality_trace.api.share_link import ShareLinkMiddleware
 from quality_trace.api.routers import admin as admin_router
 from quality_trace.api.routers import analytics as analytics_router
 from quality_trace.api.routers import admin_pages
@@ -59,6 +60,10 @@ def create_app() -> FastAPI:
             status_code=status,
             content={"code": exc.code, "message": exc.message, "data": None},
         )
+
+    # ---- 分享链接参数透传：把入口的 ?sharecode= 续到页面内跳转与接口请求 ----
+    # 线上沙盒的入口带访问码，应用内相对跳转会丢参数，表现为「只有首页能开」。
+    app.add_middleware(ShareLinkMiddleware)
 
     app.include_router(auth_router.router)
     app.include_router(chat_router.router)
