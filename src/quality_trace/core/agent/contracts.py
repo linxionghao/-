@@ -382,6 +382,10 @@ def build_default_registry() -> ContractRegistry:
             FieldSpec("line_id", "str", True, desc="产线；班组长由服务端覆写为本线"),
             FieldSpec("qty", "int", True, desc="不良数量，件"),
             FieldSpec(
+                "plan_qty", "int", False,
+                desc="工单计划数；服务端可从工单带出，用于校验不良数是否超计划",
+            ),
+            FieldSpec(
                 "defect_code", "str", False,
                 desc="缺陷码；草稿阶段可为空，确认阶段必填",
             ),
