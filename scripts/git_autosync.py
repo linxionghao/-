@@ -75,7 +75,15 @@ def log(msg: str) -> None:
     """写轮转日志。落在 .git/ 下，不会被自己提交进去。"""
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = "%s %s" % (stamp, msg)
-    print(line)
+    # 计划任务用 pythonw.exe 启动（无控制台），此时 sys.stdout 为 None，
+    # 虽然 print() 会静默放过，但换成别的输出方式就会 AttributeError。
+    # 显式判空，让「有没有控制台」不影响脚本行为——在无人值守的路径上，
+    # 依赖「恰好不会崩」的写法迟早会崩。
+    if sys.stdout is not None:
+        try:
+            print(line)
+        except (OSError, ValueError):
+            pass
     try:
         # 超过 512KB 就截断，保留最近一段即可——这是运维记录，不是业务数据
         if LOG.exists() and LOG.stat().st_size > 512 * 1024:
@@ -87,11 +95,17 @@ def log(msg: str) -> None:
         pass
 
 
-def run(args: list[str], *, timeout: int = 120, cwd: Path | None = None) -> tuple[int, str, str]:
+def run(args: list[str], *, timeout: int = 120, cwd: Path | None = None,
+        strip: bool = True) -> tuple[int, str, str]:
     """跑一个子进程，返回 (返回码, stdout, stderr)。
 
     统一按 utf-8 + replace 解码：Windows 上 git 的中文报错是 GBK，
     直接按 utf-8 读会在日志里留一堆替换字符，排查时看不出原话。
+
+    `strip=False` 是给 `git status --porcelain -z` 用的：它的首行以状态位的
+    前导空格开头（`" M docs/x.md"`），strip 掉之后按 `entry[3:]` 取路径会少切
+    一个字符，`docs/` 变成 `ocs/`——提交信息里就会出现这种一眼看不出错、
+    但目录名全错的摘要。
     """
     env = dict(os.environ)
     env.setdefault("GIT_TERMINAL_PROMPT", "0")   # 永不弹凭据输入框（计划任务里没人点）
@@ -99,11 +113,11 @@ def run(args: list[str], *, timeout: int = 120, cwd: Path | None = None) -> tupl
         p = subprocess.run(
             args, cwd=str(cwd or REPO), capture_output=True, timeout=timeout, env=env,
         )
-        return (
-            p.returncode,
-            p.stdout.decode("utf-8", "replace").strip(),
-            p.stderr.decode("utf-8", "replace").strip(),
-        )
+        out = p.stdout.decode("utf-8", "replace")
+        err = p.stderr.decode("utf-8", "replace")
+        if strip:
+            out, err = out.strip(), err.strip()
+        return p.returncode, out, err
     except subprocess.TimeoutExpired:
         return 124, "", "超时（%ds）" % timeout
     except OSError as exc:
@@ -158,9 +172,12 @@ def in_conflict() -> str | None:
 
 def changed_paths() -> list[str]:
     """工作区 + 暂存区的全部改动路径（含未跟踪）。"""
-    rc, out, err = run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    rc, out, err = run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        strip=False,
+    )
     if rc != 0:
-        log("git status 失败：%s" % (err or out))
+        log("git status 失败：%s" % (err.strip() or out.strip()))
         return []
     parts = [p for p in out.split("\0") if p]
     paths: list[str] = []
