@@ -194,7 +194,7 @@ def convert(md_text: str, out_path: Path, *, title: str, header: str,
                 ncol = len(headers)
                 doc.table(
                     headers, rows,
-                    widths=col_widths(ncol),
+                    widths=auto_widths(headers, rows),
                     font_size=font_for(ncol),
                     align_center_cols=tuple(range(ncol)) if ncol <= 4 else (0,),
                     zebra=False,
