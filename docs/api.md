@@ -616,9 +616,19 @@ bash scripts/smoke_defects.sh 8000    # 录入端 18 项断言
 
 ## 11. 统计与 SPC 分析接口
 
-**权限**：`quality_manager` / `quality_engineer`。班组长一律 403（40301）。
-**数据范围**：班组长即使被允许调用，其 `line_id` 也会被**覆写**为本人绑定的产线；
+**权限**按"结果 / 过程参数"分界，不是整体只给管理层：
+
+| 端点 | QE | SL | QM | 理由 |
+|---|---|---|---|---|
+| `/overview` `/dashboard` `/pareto` `/pareto/compare` `/trend` `/weekday` `/p-chart` | ✓ | 本线 | ✓ | 给的是**结果**（不良率、趋势），班组长得知道才能改进 |
+| `/control-chart` `/items` `/measurements` | ✓ | — | ✓ | 给的是**过程参数**（实测值序列、量具、操作者） |
+
+**数据范围**：班组长调"结果类"接口时，`line_id` 被**覆写**为本人绑定的产线；
 未绑定产线的班组长直接 40302，绝不退化成"全厂可见"。
+
+**一个已修的绕道**：`/dashboard` 三角色都能调，而它接受 `item_code`
+（内部会算控制图）。班组长加 `?item_code=外径` 就能取走过程参数。
+现在该参数对 SL 被**丢弃**——不报错，只是不给图。
 
 所有接口都有三个通用参数：
 
@@ -1030,13 +1040,13 @@ curl "http://127.0.0.1:8000/api/v1/msa/consistency?item_code=外径&z_limit=3" \
 | 29 | GET | `/defects` | SL/QE/QM | 缺陷列表（SL 仅本线） |
 | 30 | GET | `/defects/{no}` | SL/QE/QM | 缺陷详情（SL 不含归因结论） |
 | 31 | POST | `/uploads/photo` | SL | 图片预上传（magic byte 校验） |
-| 32 | GET | `/analytics/overview` | QE/QM | KPI 汇总 |
-| 33 | GET | `/analytics/dashboard` | QE/QM | 看板聚合 |
-| 34 | GET | `/analytics/pareto` | QE/QM | 帕累托（含 ABC） |
-| 35 | GET | `/analytics/pareto/compare` | QE/QM | 两期对比 |
-| 36 | GET | `/analytics/trend` | QE/QM | 趋势（拟合 + EWMA） |
-| 37 | GET | `/analytics/weekday` | QE/QM | 星期效应 |
-| 38 | GET | `/analytics/p-chart` | QE/QM | 不合格品率控制图 |
+| 32 | GET | `/analytics/overview` | QE/SL/QM | KPI 汇总（SL 本线） |
+| 33 | GET | `/analytics/dashboard` | QE/SL/QM | 看板聚合（SL 无图） |
+| 34 | GET | `/analytics/pareto` | QE/SL/QM | 帕累托（含 ABC） |
+| 35 | GET | `/analytics/pareto/compare` | QE/SL/QM | 两期对比 |
+| 36 | GET | `/analytics/trend` | QE/SL/QM | 趋势（拟合 + EWMA） |
+| 37 | GET | `/analytics/weekday` | QE/SL/QM | 星期效应 |
+| 38 | GET | `/analytics/p-chart` | QE/SL/QM | 不合格品率控制图 |
 | 39 | GET | `/analytics/control-chart` | QE/QM | X̄-R / I-MR 控制图 |
 | 40 | GET | `/analytics/items` | QE/QM | 计量项目清单 |
 | 41 | POST | `/analytics/measurements` | QE/QM | 录入实测值 |

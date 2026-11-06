@@ -4,7 +4,7 @@
 
 一个不良品单进去，四样东西出来：**关联对象、疑似原因排序、影响范围清单、8D 草稿**。
 
-[![tests](https://img.shields.io/badge/tests-214%20passed-brightgreen)]()
+[![tests](https://img.shields.io/badge/tests-671%20passed-brightgreen)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)]()
 [![fastapi](https://img.shields.io/badge/FastAPI-async-009688)]()
 [![ci](https://img.shields.io/badge/ci-py3.9%20%7C%203.11-informational)]()
@@ -186,6 +186,78 @@ export QT_LLM_API_KEY=sk-xxxx        # Windows: set QT_LLM_API_KEY=sk-xxxx
 | 弱网/断网 | localStorage 队列（上限 20），30 秒轮询 + 上线事件补传，`client_draft_id` 幂等去重 |
 | 数据范围 | 班组长列表/详情的 SQL 强制 `line_id = 令牌产线`；他线单据一律 40404 |
 
+### 4.6 质量看板与 SPC
+
+![质量看板](docs/screenshots/10-analytics.png)
+
+| 能力 | 实现要点 |
+|---|---|
+| KPI | 不良率的分母是**有工单记录的生产数**；缺工单时返回 `null` 而不是 0（0 会被读成"零缺陷"） |
+| 帕累托 | ABC 分级看**累加前**比例——最后一个跨过 80% 的项目必然属于 A，写成累加后会漏掉它 |
+| 控制图 | 按子组大小自动选 X̄-R / I-MR；子组大小不一致时**拒绝出图**（`need_regroup`），不硬算错的控制限 |
+| 判异准则 | Nelson 8 条全实现；`verdict` 第一条永远是"先看 R 图"——R 图失控时 X̄ 图的限本身不可信 |
+| 过程能力 | Cp/Cpk 用**组内 σ**（R̄/d₂），Pp/Ppk 用整体 σ；两个都报，差值本身是特殊原因的诊断信号 |
+| P 图 | 控制限**逐点不同**（分母 n_i 每天变），用固定限会把产量少的那天误判成异常 |
+| 趋势 | 日/周/月分桶（周以周一起算）、线性拟合带 t 检验、EWMA(λ=0.3) |
+| 图表 | 手写 SVG，不引 echarts——离线可用，体积约为 1/5，异常点精确控制为红点 |
+
+**这里修过一个真 bug**：`sigma_within = rbar/(d2*√n)` 多除了一个 √n，
+n=5 时 Cpk 被高估 2.24 倍——真实 Cpk=0.6 的不合格过程会算出 1.34，
+判"能力充足"。数字仍在合理区间，没有任何异常信号，所以特别危险。
+见 [ADR-0007](docs/adr/0007-sigma-caliber.md)。
+
+### 4.7 批次谱系追溯
+
+![批次追溯](docs/screenshots/11-genealogy.png)
+
+| 能力 | 实现要点 |
+|---|---|
+| 数据模型 | `material_lot` × `lot_consumption` **多对多**。一批料投多单、一单吃多批——用树建模在第二张工单上就撞墙 |
+| 前向追溯 | 批 → 工单 → 缺陷，带 `coverage` 覆盖率；< 1 时告警"只能说明查到这些，不能说明只有这些" |
+| 反向追溯 | 缺陷 → 工单 → 料，按"该批还进了多少张别的单"排可疑度；`min_orders` 护栏防止"每批都可疑" |
+| 因果纪律 | 返回恒定带 `caveat`：**相关不等于因果**。同一批料进 6 张单只有 1 张出问题，问题更可能在那张单的工艺参数上 |
+| 供应商记分卡 | 批次数 / 涉及工单 / 缺陷件数 / 等级；影响面取"工单数 ≥ 10 **或** 件数 ≥ 2000"为高 |
+
+批号有两个：`lot_id`（内部）与 `supplier_lot`（供应商）。**必须分开存**——
+两家供应商可能都叫 `20261015A`，混用会把责任判给错的那家。
+见 [ADR-0009](docs/adr/0009-genealogy-many-to-many.md)。
+
+### 4.8 测量系统分析（MSA）
+
+![MSA](docs/screenshots/13-msa.png)
+
+| 能力 | 实现要点 |
+|---|---|
+| GR&R 双算法 | 均值极差法（现场能手算）与 ANOVA 法（能拆交互项）**都算都报，不取平均**；差 > 5 个百分点提示"存在交互效应或异常值" |
+| ndc | 独立否决项。%GRR=28%（"有条件接受"）时 ndc 可能只有 4，用这种分辨率判 8 条准则等于抛硬币 |
+| 留档 | `raw_json`（可重算）+ `result_json`（结论快照）双存；`recompute` 只并排返回新旧，**不覆盖归档** |
+| 覆盖率 | `gaps` 列出"有实测值但从未做过 MSA"的项目——把"我们一直在画控制图，但从没验证过尺子"变成一个能派活的名字 |
+| 产线数据 | **不硬算 GR&R**，改做人员读数一致性检查（下图） |
+
+**这是本项目里唯一一处主动"删功能"**：最初实现了从产线实测值
+一键算 %GRR，跑出来 > 90%（"测量系统不可接受"）。结论是算法制造的——
+产线数据里每件只测一次，"同一人重复测同一件"不存在，重复性只能拿
+过程漂移去顶替。见 [ADR-0008](docs/adr/0008-no-grr-from-production-data.md)。
+
+替换成它答得了的问题：同一张工单上，不同班次的人读数水平一致吗？
+判据用**组内**合并标准差算均值差的标准误，`z > 3` 即显著。
+用全局标准差会把工单之间的真实差异算进噪声，导致永远判"一致"——
+一个给出假安全结论的功能，比没有更危险。
+
+### 4.9 数据导入导出
+
+![数据导入导出](docs/screenshots/12-data-io.png)
+
+| 能力 | 实现要点 |
+|---|---|
+| 编码判定 | utf-8-sig → utf-8 → gb18030 → big5 → latin-1，外加 **GBK 乱码启发式回退**（GBK 文本用 utf-8 解码不报错，只给一堆替换字符） |
+| 表头归一化 | 全角转半角、去单位括号、别名表（"工单号/工单/单号"都认），只认一种写法等于把用户挡在门外 |
+| 部分成功 | 一行错不毁整份文件；逐行错误按 Excel 行号报（从 2 起），报"第 42 行"用户能直接定位 |
+| 预览/提交分离 | 两个 URL 而不是一个开关——误点"确认导入"不该因为参数传错真的写库 |
+| XLSX | 手写 OOXML（zip + 6 个 part），冻结表头 + 自动筛选 + 中文列宽；不引 openpyxl，见 [ADR-0010](docs/adr/0010-zero-dep-xlsx.md) |
+| CSV 注入防护 | 以 `=` `+` `-` `@` 开头时前置单引号，挡掉 `=cmd|'/c calc'!A1` 这类载荷 |
+| 权限 | 班组长无导入权——这是唯一能一次写坏主数据表的入口 |
+
 ---
 
 ## 5. 架构总览
@@ -337,7 +409,7 @@ assert "v1" not in {h["chunk"]["doc_meta"]["version"] for h in hits}
 
 ## 7. 数据模型
 
-### 7.1 十二张表
+### 7.1 十六张表
 
 | 域 | 表 | 关键字段与约束 |
 |---|---|---|
@@ -353,6 +425,20 @@ assert "v1" not in {h["chunk"]["doc_meta"]["version"] for h in hits}
 |  | `defect_item` | 双时间、`is_backfill`、`client_draft_id` 唯一（离线幂等）、状态 draft/pending |
 |  | `defect_code` | 缺陷码字典：分组、`keywords_json`（回退匹配） |
 | 归因 | `attribution_order` | 证据链 JSON、L3 假设、审批状态机、8D 草稿缓存 |
+| 计量 | `meas_record` | 实测值 + `subgroup_no`（切子组）+ `usl/lsl`（**随行存当时规格**）+ 量具 + 测量人 |
+| 追溯 | `material_lot` | 内部批号 / `supplier_lot`（**必须分开**）/ 数量 / 状态 |
+|  | `lot_consumption` | 批 × 工单 × 工序，多对多；`UNIQUE(lot_id, work_order_id, op_code)` |
+| 计量 | `msa_study` | `raw_json`（可重算）+ `result_json`（结论快照）双存，`recompute` 不覆盖 |
+
+三处新增字段值得单独解释：
+
+- `meas_record.usl/lsl` **跟着每一行存**，不维护"当前规格表"。
+  规格会改（客户放宽公差、工程变更），三个月后回头算 Cpk 必须用**当时**的规格，
+  读当前主数据会把新旧数据混在同一个分母下，算出的 Cpk 既不是过去的也不是现在的。
+- `material_lot.supplier_lot` 与 `lot_id` **必须分开**。供应商批号只在他们的体系内
+  唯一，两家可能都叫 `20261015A`；混用会让反查把两家的料算成一批，责任判给错的那家。
+- `msa_study` 的 `raw_json` 与 `result_json` **都存不是冗余**：前者回答"换个算法会算出
+  什么"，后者回答"当时签字时看到的数字是多少"。只留一个都无法自证。
 
 ### 7.2 双时间列：为什么每张业务表都有两个时间
 
@@ -438,7 +524,44 @@ SSE 事件序列：`status`（正在检索依据…）→ `sources`（引用数�
 | GET | `/api/v1/work-orders/{id}` | 工单失焦校验 |
 | POST | `/api/v1/uploads/photo` | 照片预上传，返回 token |
 
-完整规范见 [`docs/api.md`](docs/api.md)；问答接口细节见 [`docs/chat-api.md`](docs/chat-api.md)。
+### 8.5 统计与 SPC（QE / QM，部分对 SL 开放）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/analytics/overview` | KPI 汇总（含两期对比） |
+| GET | `/api/v1/analytics/dashboard` | 看板聚合（一次请求拿到全部） |
+| GET | `/api/v1/analytics/pareto` | 帕累托 + ABC（`dim` 白名单防注入） |
+| GET | `/api/v1/analytics/pareto/compare` | 两期对比（上升/下降/**新出现**） |
+| GET | `/api/v1/analytics/trend` | 趋势 + 线性拟合 + EWMA |
+| GET | `/api/v1/analytics/weekday` | 星期效应 |
+| GET | `/api/v1/analytics/p-chart` | 不合格品率控制图 |
+| GET | `/api/v1/analytics/control-chart` | X̄-R / I-MR（自动选图） |
+| GET | `/api/v1/analytics/items` | 计量项目清单 |
+| POST | `/api/v1/analytics/measurements` | 录入实测值 |
+| POST | `/api/v1/analytics/measurements/batch` | 批量录入（单事务） |
+
+前七个对班组长开放（**给结果**），后四个只给 QE/QM（**给过程参数**）。
+班组长调 `/dashboard` 时 `item_code` 被丢弃——这条是修过的绕道，见 §4.6。
+
+### 8.6 批次追溯、数据交换、MSA（QE / QM）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/genealogy/lots/{id}` | 前向追溯（批 → 工单 → 缺陷） |
+| GET | `/api/v1/genealogy/defects/{no}/backward` | 反向追溯 + 可疑度排序 |
+| GET | `/api/v1/genealogy/suppliers/scorecard` | 供应商记分卡 |
+| GET | `/api/v1/io/datasets` | 可导入/导出数据集元信息 |
+| POST | `/api/v1/io/import/preview` | 导入预览（只校验不落库） |
+| POST | `/api/v1/io/import` | 导入落库（部分成功语义） |
+| GET | `/api/v1/io/export` | 单表导出 csv / xlsx |
+| GET | `/api/v1/io/export/bundle` | 多表打包 xlsx |
+| POST | `/api/v1/msa/studies` | 登记研究（双算法并报） |
+| GET | `/api/v1/msa/consistency` | 人员读数一致性（**不是 GR&R**） |
+| GET | `/api/v1/msa/gaps` | 有实测值但从未做过 MSA 的项目 |
+
+完整规范见 [`docs/api.md`](docs/api.md)（含 74 端点总表与权限列）；
+问答接口细节见 [`docs/chat-api.md`](docs/chat-api.md)；
+权限矩阵见 [`docs/permissions.md`](docs/permissions.md)。
 
 ---
 
@@ -448,9 +571,10 @@ SSE 事件序列：`status`（正在检索依据…）→ `sources`（引用数�
 
 | 层 | 命令 | 证明什么 |
 |---|---|---|
-| 单元/集成测试 | `python -m pytest tests/ -q` | 规则、状态机、权限、降级路径正确 |
+| 单元/集成测试 | `python -m pytest tests/ -q` | 规则、状态机、权限、降级路径正确（**671 通过 / 17 跳过**） |
 | 接口冒烟 | `bash scripts/smoke_stage3.sh` `/` `smoke_defects.sh` | 真实服务上 33 项断言全通过 |
-| 页面巡检 | `python scripts/ui_check.py` / `ui_check_pages.py` | 真实 Chrome 里页面无 JS 异常、流程可走通 |
+| 页面巡检 | `ui_check*.py` 六个脚本 | 真实 Chrome 里页面无 JS 异常、流程可走通（**共 96 项**） |
+| 一键闭环 | `python scripts/demo_closed_loop.py` | 临时库上跑完认证→检索→录入→归因→审计 15 项，不污染演示数据 |
 
 ### 9.2 测试覆盖的重点
 
@@ -465,6 +589,14 @@ SSE 事件序列：`status`（正在检索依据…）→ `sources`（引用数�
 | `test_defects.py` | 43 | 归一化、双时间、幂等、字段裁剪、照片、工单校验 |
 | `test_version_gate.py` | 9 | 三版同库、废止零泄漏、as_of 格式 |
 | `test_auth.py` | 13 | JWT 往返/过期/篡改、登录防探测 |
+| `test_analytics.py` | 94 | 描述统计、Nelson 8 规则、X̄-R/I-MR/P 图、Cp/Cpk、PPM、帕累托 ABC、趋势 |
+| `test_analytics_service.py` | 36 | 区间解析、看板聚合、控制图选型、能力判定、星期效应 |
+| `test_genealogy.py` | 26 | 正查/反查、覆盖率、可疑度阈值、供应商分级、图谱截断 |
+| `test_io.py` | 82 | 编码/分隔符/表头/注入、XLSX 结构、四数据集导入（含 dry_run 与逐行错误） |
+| `test_api_io.py` | 25 | 导入导出接口契约、文件名编码、权限 |
+| `test_msa.py` | 92 | 均值极差法、ANOVA、ndc、偏倚/线性/稳定性、σ 口径回归 |
+| `test_msa_service.py` | 43 | 留档、重算不覆盖、一致性检查（含"组内 σ 而非全局 σ"回归） |
+| `test_permission_matrix.py` | 99 | 三角色 × 64 端点边界 + 元规则（新端点没断言就让构建失败） |
 
 ### 9.3 一个断言示例：废止版真的进不来
 
@@ -483,9 +615,23 @@ tests/test_version_gate.py::TestVersionGate::test_future_version_not_visible PAS
 任何未捕获的 JS 异常都会让脚本以非零码退出——页面白屏不会靠肉眼发现。
 
 ```bash
-python scripts/ui_check.py 8000          # 移动端三步
-python scripts/ui_check_pages.py 8000    # 聊天页 + 后台五页
+python scripts/ui_check.py 8000              # 移动端三步
+python scripts/ui_check_pages.py 8000        # 聊天页 + 后台五页
+python scripts/ui_check_analytics.py 8000 --shot   # 质量看板 14 项
+python scripts/ui_check_genealogy.py 8000 --shot   # 批次追溯 12 项
+python scripts/ui_check_data.py 8000 --shot        # 导入导出 15 项
+python scripts/ui_check_msa.py 8000 --shot         # MSA 23 项
 ```
+
+巡检脚本写的断言是**结构 + 性质**，不是像素比对：
+
+- 结构：`#verdict-banner` 非空、表格行数 > 0、SVG 里 `path + rect + circle` 总数 > 0
+  （只数 `rect` 会把折线图误判成空图——折线是 `path + circle`）；
+- 性质：MSA 的"阈值改严后判定更敏感"、导入的"重复导入被判跳过"（验证幂等真的生效）、
+  追溯的"班组长 403"。性质断言不依赖具体演示数据，换一套数据仍然成立。
+
+已知现象：移动端巡检会打印一条资源 404 告警（Chrome 对空白页默认图标的请求），
+服务端访问日志无对应记录，不影响流程，详见 `docs/test-plan.md` §7。
 
 ---
 
@@ -508,6 +654,10 @@ quality-trace/
 │   ├── design.md / api.md        # 设计取舍 / 接口规范
 │   ├── chat-api.md               # 问答接口设计（SSE/错误码/降级）
 │   ├── stage3-design.md          # 权限矩阵与双端界面设计
+│   ├── data-model.md             # 16 表逐表 + 双时间戳 + 查询手册
+│   ├── permissions.md            # 三角色 × 64 接口矩阵
+│   ├── test-plan.md / acceptance.md   # 测试计划 / 验收对照
+│   ├── adr/                      # 10 条架构决策记录
 │   └── screenshots/              # 页面巡检留证
 ├── examples/
 │   └── phase1_rag_demo.py        # 阶段 1 单脚本 RAG 原型（薄 CLI）
@@ -516,14 +666,17 @@ quality-trace/
 │   ├── run_server.sh / .ps1      # 一键起服务（先重建索引）
 │   ├── smoke_stage3.sh           # 审计/审批接口冒烟
 │   ├── smoke_defects.sh          # 录入端接口冒烟
-│   └── ui_check*.py              # 真实浏览器巡检
+│   ├── demo_closed_loop.py       # 一键闭环（临时库，15 项断言）
+│   └── ui_check*.py              # 真实浏览器巡检（6 个脚本）
 ├── src/quality_trace/
-│   ├── api/                      # 入口层：app / deps / sse / routers
+│   ├── api/                      # 入口层：app / deps / sse / routers（9 个路由模块）
 │   ├── core/
 │   │   ├── knowledge/            # 切片 / 检索 / 提示词
 │   │   ├── llm/                  # 供应商适配
-│   │   ├── repo/                 # SQLite 读写
-│   │   └── services/             # 用例编排（7 个服务）
+│   │   ├── analytics/            # 纯数学：描述统计 / SPC / 能力 / 帕累托 / 趋势 / MSA
+│   │   ├── io/                   # 编码判定 / CSV / 零依赖 XLSX / 导入导出
+│   │   ├── repo/                 # SQLite 读写（16 表）
+│   │   └── services/             # 用例编排（12 个服务）
 │   ├── utils/config.py           # 配置加载（YAML + 环境变量）
 │   └── web/                      # chat.html / mobile.html / admin/*.html
 ├── tests/                        # 与 src 镜像
@@ -611,25 +764,38 @@ PowerShell 先执行 `chcp 65001`；服务端文件读写统一 UTF-8，不受�
 
 | 模块 | 状态 | 验证方式 |
 |---|---|---|
-| 三角色 JWT 鉴权 + 数据级过滤 | ✅ | `tests/test_auth.py`、冒烟脚本越权断言 |
-| 知识库上传/切片/下架/重建 | ✅ | `tests/test_knowledge_admin.py` + 页面 |
-| 混合检索（BM25 + 向量 + RRF） | ✅ | `tests/test_knowledge.py`；向量通道可选 |
-| 版本失效三道闸（as_of） | ✅ | `tests/test_version_gate.py` 9 例 |
-| 问答 SSE + 引用 + 降级 | ✅ | `tests/test_chat_service.py` + 真实服务 |
+| 三角色 JWT 鉴权 + 数据级过滤 | ✅ | `test_auth.py` 13 例 + `test_permission_matrix.py` 99 例 |
+| 知识库上传/切片/下架/重建 | ✅ | `test_knowledge_admin.py` 11 例 + 页面 |
+| 混合检索（BM25 + 向量 + RRF） | ✅ | `test_knowledge.py` 21 例；向量通道可选 |
+| 版本失效三道闸（as_of） | ✅ | `test_version_gate.py` 9 例 |
+| 问答 SSE + 引用 + 降级 | ✅ | `test_chat_service.py` + 真实服务 |
 | 提示词存库、改完即生效 | ✅ | 后台页面与接口 |
-| 对话审计三规则 + 核查 | ✅ | `tests/test_audit.py` 31 例 |
-| 归因审批 + 8D 导出 | ✅ | `tests/test_attribution.py` 11 例 |
-| 现场录入 + 离线补传 | ✅ | `tests/test_defects.py` 43 例 + 真实 Chrome |
-| 批次级谱系（原料→工序→成品） | ⏳ 阶段 4 | — |
-| SPC 判异（Nelson 规则） | ⏳ 阶段 4 | — |
-| 归因 L1/L2 规则与统计引擎 | ⏳ 阶段 4 | — |
+| 对话审计三规则 + 核查 | ✅ | `test_audit.py` 31 例 |
+| 归因审批 + 8D 导出 | ✅ | `test_attribution.py` 11 例 |
+| 现场录入 + 离线补传 | ✅ | `test_defects.py` 50 例 + 真实 Chrome |
+| 质量看板 + SPC 判异 | ✅ | `test_analytics*.py` 130 例 + 页面 14 项 |
+| 过程能力（Cp/Cpk/Pp/Ppk/PPM） | ✅ | `TestSigmaCaliber` 3 例回归 |
+| 批次级谱系正/反向追溯 | ✅ | `test_genealogy.py` 26 例 + 页面 12 项 |
+| 测量系统分析（GR&R 双算法） | ✅ | `test_msa*.py` 135 例 + 页面 23 项 |
+| 数据导入导出（CSV/XLSX） | ✅ | `test_io.py` 82 例 + `test_api_io.py` 25 例 + 页面 15 项 |
+| 归因 L1/L2 规则引擎 | 🟡 | L1 规则命中已实现（审计三规则），L2 统计相关未做 |
+| 单件谱系（序列号级） | ⬜ | 见 §12.1，明确不做 |
+
+合计 **671 例单测 + 33 项接口冒烟 + 96 项页面巡检**，全部可一键重跑。
 
 ### 12.3 下一步计划
 
-1. **谱系全表**：`material_batch / process_event / inspection` 建齐，支持正反向追溯查询；
-2. **SPC**：Nelson 八规则进入 `core/spc/`，与会话时间窗对齐，输出「异常点 + 规则编号」；
-3. **归因引擎**：L1 规则命中（刀具寿命、同批次、同设备）→ L2 统计相关（卡方/趋势）→ L3 假设排序；
-4. **判定闭环**：质量工程师判定接口（`judged` 状态），把「待判定」真正走完。
+按"补短板"排序，不是按"加功能"排序：
+
+1. **归因 L2 统计引擎**：同批次/同设备/同刀具的分组卡方检验与趋势相关，
+   输出"这个假设在统计上站得住"而不只是"关键词匹配到"。
+   这是当前最大的缺口——L3 假设排序目前主要靠 LLM，缺少可复算的统计支撑。
+2. **判定闭环**：`defect_item` 的 `judged` 状态与质量工程师判定接口，
+   把"待质量工程师判定"这句回执文案真正走完。
+3. **向量通道的离线方案**：当前 embedding 依赖外部 API，断开时退化为纯 BM25。
+   本地小模型（如 bge-small）可离线但会增加部署复杂度，需要先测收益。
+4. **MES 数据接入适配层**：行映射、单位换算、幂等键、冲突检测。
+   现在数据靠导入，接 MES 是下一步的自然延伸。
 
 ---
 
@@ -653,9 +819,15 @@ bash scripts/smoke_defects.sh 8000
 # 4) 页面巡检（需本机 Chrome）
 python scripts/ui_check.py 8000
 python scripts/ui_check_pages.py 8000
+python scripts/ui_check_analytics.py 8000 --shot
+python scripts/ui_check_genealogy.py 8000 --shot
+python scripts/ui_check_data.py 8000 --shot
+python scripts/ui_check_msa.py 8000 --shot
 ```
 
-前五项全绿，即证明「鉴权 → 检索 → 问答 → 审计 → 审批 → 录入」主链路完整可用；第 0 项是最快的验证方式。
+前五项全绿，即证明「鉴权 → 检索 → 问答 → 审计 → 审批 → 录入」主链路完整可用；
+加上第 4 组的四个脚本，则「统计 → 追溯 → 数据交换 → 测量系统」第二组链路也可用。
+第 0 项是最快的验证方式（不用起服务、不污染演示数据）。
 
 ---
 
@@ -667,13 +839,16 @@ python scripts/ui_check_pages.py 8000
 |---|---|---|
 | [`requirements.md`](docs/requirements.md) | 需求基线：7 个实体、8 条验收标准、归因 L1–L4 | 想知道"要做什么" |
 | [`architecture.md`](docs/architecture.md) | 五层架构、12 张表的设计起点、两个陷阱的机制设计 | 想知道"为什么这么分层" |
-| [`data-model.md`](docs/data-model.md) | 12 张表逐表说明、双时间戳、索引与迁移、常用查询手册 | 想读/改数据库 |
+| [`data-model.md`](docs/data-model.md) | 16 张表逐表说明、双时间戳、索引与迁移、11 组常用查询 | 想读/改数据库 |
 | [`api.md`](docs/api.md) | 完整 HTTP 规范：响应包、28 个错误码、SSE 事件、全部接口 | 想对接接口 |
-| [`permissions.md`](docs/permissions.md) | 三角色边界、三层防线、31 个接口的权限矩阵 | 想知道"谁能看什么" |
+| [`permissions.md`](docs/permissions.md) | 三角色边界、三层防线、64 个接口的权限矩阵、越权测试对照 | 想知道"谁能看什么" |
+| [`test-plan.md`](docs/test-plan.md) | 三层验证策略、用例地图、覆盖率现状、实测记录 | 想重跑验证 |
+| [`acceptance.md`](docs/acceptance.md) | 8 条验收标准逐条对照（含未达成项的真实说明） | 想知道"做完没有" |
+| [`adr/`](docs/adr/) | 10 条架构决策记录：为什么手写 JWT、为什么 SSE、为什么不做 GR&R | 想改这些决定之前 |
 | [`stage3-design.md`](docs/stage3-design.md) | 阶段 3 的批次拆分、决策记录（ADR 摘要）、权限矩阵初稿 | 想了解取舍过程 |
 | [`chat-api.md`](docs/chat-api.md) | 问答接口的单独设计稿（SSE 时序、降级语义） | 只关心问答链路 |
 | [`discovery-report.md`](docs/discovery-report.md) | 同行方案调研（QMS/MES/RAG 落地） | 想知道"别人怎么做" |
-| [`screenshots/`](docs/screenshots/) | 9 张真实页面截图（三端入口 + 巡检留证） | 不想跑代码就看效果 |
+| [`screenshots/`](docs/screenshots/) | 13 张真实页面截图（三端入口 + 五个新模块 + 巡检留证） | 不想跑代码就看效果 |
 
 ---
 

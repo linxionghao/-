@@ -4,6 +4,48 @@
 
 ## [Unreleased]
 
+### 新增（阶段 4–6：统计、追溯、数据交换、MSA）
+
+- **统计与 SPC**（`core/analytics/` 纯数学包 + `core/services/analytics.py` + 看板页）
+  - `descriptive.py`：均值/中位数/分位数（R-7 与 Excel 一致）/IQR/Tukey 离群/Z 分数/直方图（Sturges）/偏度/峰度/移动平均/EWMA/线性拟合（含 t 统计量）
+  - `spc.py`：Nelson 8 条判异准则、X̄-R 图（A2/D3/D4/d2 系数表）、I-MR 图（E2=2.66、D4=3.267）、P 图（**控制限逐点不同**）、U 图
+  - `capability.py`：Cp/Cpk/Pp/Ppk/Ca/Cr、PPM（Abramowitz-Stegun 7.1.26 正态 CDF）、等级判定
+  - `pareto.py`：ABC 分级（**看累加前比例**）、并列名次处理、两期对比
+  - `trend.py`：日/周/月分桶、按周一起算、比率序列、星期效应
+  - 服务层 11 个接口 #32–#42；看板页 `admin/analytics.html` 手写 SVG 折线/帕累托/柱状/控制图（不引 echarts，离线可用且体积为 1/5）
+  - 修两个真问题：σ 口径双重除以 √n（Cpk 虚高 2.24 倍）、ABC 把跨 80% 的项目错判为 B
+- **批次谱系**（`material_lot` × `lot_consumption` 多对多 + 追溯服务 + 页面）
+  - 前向追溯（批→工单→缺陷，带覆盖率告警）、反向追溯（缺陷→工单→料，可疑度排序带 `min_orders` 护栏）、供应商记分卡、影响面分级
+  - 8 个接口 #43–#50；页面 `admin/genealogy.html` 三列 SVG 图谱；恒定输出"相关不等于因果"
+- **数据导入导出**（`core/io/` 零依赖包）
+  - `textio.py`：编码自动判定（utf-8-sig → utf-8 → gb18030 → big5 → latin-1）+ **GBK 乱码启发式回退**、分隔符投票、表头归一化（全角转半角、去单位括号）、CSV 注入防护（`=+-@` 前置单引号）
+  - `xlsx.py`：手写 OOXML（zip + 6 个 part），冻结表头 + 自动筛选 + 中文列宽估算，不依赖 openpyxl
+  - `exporter.py` 5 个数据集 / `importer.py` 4 个数据集（部分成功语义 + 逐行错误 + dry_run）
+  - 6 个接口 #51–#56 + 页面 `admin/data.html`（预览与提交拆成两个按钮）
+- **MSA 测量系统分析**（`core/analytics/msa.py` + 服务 + 页面）
+  - 均值极差法与 ANOVA 法双算**都报不择优**；交互效应检测；ndc 独立否决项；偏倚/线性/稳定性
+  - 研究留档 `msa_study`：`raw_json` + `result_json` 双存，`recompute` 只并排返回不覆盖归档
+  - `GET /msa/consistency` **人员读数一致性检查**（不是 GR&R）：产线数据每件只测一次，重复性与零件变差无法分离，硬算 %GRR 会到 90% 以上且结论是算法制造的
+  - 8 个接口 #57–#64 + 页面 `admin/msa.html`（先给覆盖率与缺口，再给单次研究细节）
+- **权限矩阵回归** `tests/test_permission_matrix.py` 99 例：端点清单驱动 + 元规则（新端点没断言就让构建失败）
+- 演示数据：14 天跨日实测值（3 人 × 3 班次）、14 天缺陷单、14 批物料含 27 条领料关系、两次 MSA（一合格一不合格）
+- 页面巡检脚本：`ui_check_analytics.py`(14) / `ui_check_genealogy.py`(12) / `ui_check_data.py`(15) / `ui_check_msa.py`(23)
+- 文档：`docs/api.md` 扩至第三部分（§11–§16，含 74 端点总表）、`docs/data-model.md` 增至 16 表并补 5 组查询、`docs/permissions.md` 增至 64 接口矩阵
+
+### 修复
+
+- **`fix(analytics)`：班组长经 `/dashboard?item_code=` 取走控制图**。权限挂在路由上、敏感数据挂在参数上，两者没对上就是绕道。现在 SL 的 `item_code` 被丢弃（不报错），新增 `TestLeaderScope` 守住
+- `fix(io)`：`_num`/`_int` 把空值当错误 → 选填列留空导致整行失败；改为空值返回 `(None, None)`，必填判断交给调用方
+- `fix(io)`：`exporter.build` 收到未知格式时静默降级成 CSV → 用户点"导出 Excel"拿到 `.csv` 会以为系统坏了，改为抛 `ValueError`
+- `fix(io)`：`Content-Disposition` 的 ASCII 兜底把中文名压成 `_.csv`，旧浏览器看到一堆下划线；改为去噪后为空就退回 `export.<ext>`
+- `fix(analytics)`：下拉框按名称排序会落到只有几条读数的冷门项目，用户第一眼"数据不足"以为系统坏了；改为按记录数降序
+- `fix(msa)`：单测量人时 AV 恒为 0 却给出正常 %GRR，改为明确拒绝
+- `fix(msa)`：σ 输出精度 4 位会把 0.0001mm 级读数舍成 0，提到 6 位
+- `fix(seed)`：实测值原先只记在 `qe001` 名下，从产线数据做一致性检查会被直接拒绝（1 个人无法评估再现性）；改为 3 人轮班
+- `fix(seed)`：实测值没挂工单 → MSA 折叠退化"只有 1 个零件"；改为挂到每日工单 `WO-DEMO-nn`
+- `fix(seed)`：每批料只进 1 张工单 → 可疑度排序变成纯噪声；改为每批 2 张
+- `fix(seed)`：演示规格限过宽使 Cp≈6，不现实；收紧到外径 10.08/9.92（Cp 1.39）、壁厚 2.06/1.94
+
 ### 新增（工程化收尾：文档体系 + CI + 接口层测试）
 
 - 文档：新增 `docs/data-model.md`（12 表逐表 + 双时间戳 + 索引 + 查询手册 + 自检 SQL）、`docs/permissions.md`（三角色边界 + 三层防线 + 31 接口矩阵）、`docs/test-plan.md`（三层验证 + 用例地图 + 覆盖率现状 + 实测记录）、`docs/acceptance.md`（8 条验收标准逐条对照）、`docs/engineering.md`（分层约束 + 错误与降级 + 提交规范）、`docs/deployment.md`（本地/局域网/生产前六件事/排错表）

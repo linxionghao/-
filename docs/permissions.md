@@ -177,23 +177,60 @@ def public_view(row, role):
 
 服务层的 `create_draft` 其实支持质量工程师代录（QE 建单时产线取**工单所属产线**，不接受客户端传值，`tests/test_defects.py::test_qe_uses_work_order_line` 覆盖），但**接口层没有对 QE 放开**：网页端的代录入口一旦存在，就等于给了一个"可往任意产线写单"的入口，而代录是低频操作，走脚本或由主管在后台处理更合适。权限收紧时宁可留一个"以后再加"的缺口，也不要先开一个没人审计的写入面。
 
-### 2.5 统计、追溯、数据交换（QM + QE）
+### 2.5 统计与 SPC（按"结果 / 过程参数"分界）
 
-这四个模块（#32–#64）的接口权限都是 `require_roles("quality_manager", "quality_engineer")`，
-班组长一律 403。理由分三块，不是一句"管理类功能"：
+这个模块**不是**整体只给管理层。分界线是：
+
+**给结果**（三角色）——不良率、趋势、帕累托、星期效应、P 图。
+班组长知道本线结果才能改进，且 `line_id` 在服务层被强制覆写成本线。
+
+**给过程参数**（QM + QE）——控制图、实测值序列、量具编号、操作者。
+控制图里带着这些，等价于把工艺窗口暴露给现场。
 
 | # | 接口 | QE | SL | QM | 备注 |
 |---|---|---|---|---|---|
-| 32–42 | `/analytics/*` | ✓ | — | ✓ | SL 即使放开也会被覆写 `line_id`；未绑定产线 → 40302 |
-| 43–50 | `/genealogy/*` | ✓ | — | ✓ | 前向影响面跨线，不给现场 |
+| 32 | `GET /analytics/overview` | ✓ | 本线 | ✓ | KPI 汇总 |
+| 33 | `GET /analytics/dashboard` | ✓ | 本线 | ✓ | SL 的 `item_code` 被丢弃（见下） |
+| 34 | `GET /analytics/pareto` | ✓ | 本线 | ✓ | |
+| 35 | `GET /analytics/pareto/compare` | ✓ | 本线 | ✓ | |
+| 36 | `GET /analytics/trend` | ✓ | 本线 | ✓ | |
+| 37 | `GET /analytics/weekday` | ✓ | 本线 | ✓ | |
+| 38 | `GET /analytics/p-chart` | ✓ | 本线 | ✓ | 只有不良率，没有实测值 |
+| 39 | `GET /analytics/control-chart` | ✓ | — | ✓ | 含实测值序列、量具、操作者 |
+| 40 | `GET /analytics/items` | ✓ | — | ✓ | 项目清单也是一种工艺信息 |
+| 41 | `POST /analytics/measurements` | ✓ | — | ✓ | 现场由检验员在 QE 账号下录入 |
+| 42 | `POST /analytics/measurements/batch` | ✓ | — | ✓ | 同上 |
+
+**这里有一个真实修过的漏洞**：`/dashboard` 三角色都能调，而它接受
+`item_code`、内部会去算控制图。班组长加一个 `?item_code=外径`
+就能从"给结果"的接口里把"过程参数"完整取走。
+
+根因是权限挂在**路由**上，敏感数据挂在**参数**上，两者没对上。
+现在的处置是在 `dashboard()` 里丢弃 SL 的 `item_code`：
+
+```python
+if user.get("role") == "shift_leader":
+    item_code = None        # 丢弃，不报错
+```
+
+丢弃而不是报错：报错等于告诉他"这个参数有用"，也让一个正常请求变成失败。
+回归测试 `test_permission_matrix.py::TestLeaderScope` 守这条。
+
+凡是"聚合接口里嵌了敏感子结果"的地方，都要按这个思路查一遍，
+只看路由上的 `require_roles` 是查不出来的。
+
+### 2.6 批次追溯、数据交换、MSA（QM + QE）
+
+| # | 接口 | QE | SL | QM | 备注 |
+|---|---|---|---|---|---|
+| 43–50 | `/genealogy/*` | ✓ | — | ✓ | 前向影响面跨线、跨客户，不给现场 |
 | 51–56 | `/io/*` | ✓ | — | ✓ | **导入是唯一能一次写坏主数据的入口** |
 | 57–64 | `/msa/*` | ✓ | — | ✓ | 班组长看到"尺子不合格"只会今天不测了 |
 
 三条具体理由：
 
-1. **统计口径需要判断力**。`defect_rate` 用件数还是单数、`dim` 用缺陷码还是工序，
-   不同选法给出的结论可能相反。把这种选择权交给现场，等于把
-   "这个月质量好不好"变成一个随手可改的数字。
+1. **追溯要的是全局视图**。前向追溯会跨到别的产线、别的客户订单上，
+   而班组长的数据边界就是本线——给他看跨线结果，等于亲手拆掉那条边界。
 2. **导入没有确认步骤**。现场录入走 `/defects` 有两步（草稿 → 人工确认），
    导入是一步写几千行。这条通道必须比现场录入更严，不是更松。
 3. **MSA 的结论会被误用**。%GRR 不合格的正确反应是立项改量具，
@@ -214,7 +251,7 @@ def _scope(user, line_id):
 注意这里**不是**"SL 传什么就过滤什么"：如果写成 `line_id = line_id or user["line_id"]`，
 SL 显式传一个别线 ID 就能绕过。必须是覆写，不是补默认值。
 
-### 2.6 页面
+### 2.7 页面
 
 页面级权限与接口级独立实现（`admin_pages._require_manager()` 读 Cookie 里的 JWT），
 因为页面走的是浏览器 Cookie 通道，不能依赖前端 JS 加 `Authorization` 头。
@@ -288,6 +325,19 @@ auth:
 | 非本人会话读消息 → 40401 | `test_chat_repo.py` / `test_chat_service.py` |
 | 过期 token → 40103 | `test_auth.py` |
 | 篡改签名 → 40101 | `test_auth.py` |
+| SL 读管理类接口（27 个）→ 40301 | `test_permission_matrix.py::TestShiftLeaderForbidden` |
+| SL 写管理类接口（7 个）→ 40301 | `test_permission_matrix.py::test_write_endpoints` |
+| SL 带 `item_code` 调看板 → 图被丢弃 | `test_permission_matrix.py::TestLeaderScope::test_dashboard_drops_item_code_for_leader` |
+| SL 带别线 `line_id` → 仍只看本线 | `test_permission_matrix.py::test_leader_line_is_overwritten` |
+| 未绑定产线 SL 调统计 → 40302 | `test_permission_matrix.py::TestUnboundLeader::test_analytics_rejected_with_40302` |
+| 匿名访问任意接口 → 40101 | `test_permission_matrix.py::TestAnonymous` |
+| 新端点没有权限断言 → 构建失败 | `test_permission_matrix.py::TestManifestCompleteness` |
+| SL 上传导入文件 / 下模板 → 403 | `test_permission_matrix.py::TestImportPermissions` |
+
+`TestManifestCompleteness` 值得单独说一句：它从真实路由表取所有
+`/api/v1` 路径，减去测试清单与 `EXEMPT`，剩下的必须为空。
+这一条把"忘记给新端点加权限测试"从一个人为疏漏变成了一个会失败的构建。
+没有它，前面那些断言再多，也只是守住了"已经想到的那些"。
 
 "别线取单返回 404 而不是 403"是刻意的：403 等于告诉对方"这个单号存在，只是你没权限"，单号是可枚举的（`DF-20261105-0001`），返回 403 就成了一个枚举器。404 让越权和不存在不可区分。
 

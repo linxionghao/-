@@ -13,6 +13,10 @@
 | [0004](0004-three-color-evidence.md) | 三色证据模型：事实 / 引用 / 假设 | 已采纳 |
 | [0005](0005-dual-timestamps.md) | 业务时间与录入时间分离 | 已采纳 |
 | [0006](0006-degradation-not-failure.md) | 降级不是失败：200 + degraded 标记 | 已采纳 |
+| [0007](0007-sigma-caliber.md) | 过程能力用组内 σ：两个 σ 都算、名字分开 | 已采纳 |
+| [0008](0008-no-grr-from-production-data.md) | 产线数据不做 GR&R，只做人员读数一致性检查 | 已采纳 |
+| [0009](0009-genealogy-many-to-many.md) | 批次谱系是多对多，不能建成树 | 已采纳 |
+| [0010](0010-zero-dep-xlsx.md) | 手写 XLSX（zip + 最小 OOXML），不引入 openpyxl | 已采纳 |
 
 ## 什么值得写一条 ADR
 
